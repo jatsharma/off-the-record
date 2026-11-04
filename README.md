@@ -5,10 +5,19 @@ call, transcribes on the Neural Engine, writes notes with a local LLM. Nothing l
 
 ## What it does
 
-1. **Record** – one button. Microphone and system audio through ScreenCaptureKit, mixed to a 16 kHz mono WAV.
-2. **Transcribe** – Parakeet TDT 0.6b v3 (CoreML, via FluidAudio) plus a pyannote-based diarizer, so lines are labelled Speaker 1, Speaker 2, ...
-3. **Notes** – Gemma 4 e4b through Ollama, with an editable base prompt in Settings.
-4. **Keep or delete** – every meeting shows the size of its audio and transcript with a delete button for each, and one for the whole meeting.
+1. **Record** – one button, ⌘R, ⌃⌥⌘R from any app, or the menu bar item. Microphone and system audio
+   through ScreenCaptureKit into a two-channel 16 kHz WAV (left = you, right = the call). Pause and
+   resume keep one file. Rough live captions appear while you record.
+2. **Transcribe** – Parakeet TDT 0.6b v3 (CoreML, via FluidAudio) on each channel: your lines are
+   labelled **You**; the call is diarized into speakers. Echo of the call picked up by the mic is
+   suppressed before transcription. Rename a speaker once and that voice is recognised in later
+   meetings (Settings → Voices).
+3. **Notes** – Gemma 4 e4b through Ollama, with an editable prompt. Notes are editable in place,
+   checkboxes are tickable, and an Action items view collects open ones across meetings. Meetings
+   left untitled are named by the model.
+4. **Keep or delete** – every meeting shows audio and transcript sizes with per-item delete;
+   Settings → Storage deletes audio older than N days; Settings → Models deletes model downloads
+   (they come back on next use).
 
 ## Requirements
 
@@ -51,7 +60,8 @@ request that was already waiting does not pick up the new setting. If macOS show
 allowed but it still cannot record, remove the entry with the "−" button in System Settings so a
 fresh prompt appears.
 
-On first launch macOS asks for Microphone and System Audio Recording permission. The first
+On first launch a Setup Assistant walks through Microphone and System Audio permission and the model
+downloads (Help → Setup Assistant to reopen it). The first
 transcription downloads about 500 MB of speech models from Hugging Face into
 `~/Library/Application Support/FluidAudio/Models`.
 
@@ -60,7 +70,7 @@ transcription downloads about 500 MB of speech models from Hugging Face into
 | What | Path |
 | --- | --- |
 | Database | `~/Library/Application Support/Notes/notes.sqlite` |
-| Recordings | `~/Library/Application Support/Notes/Audio/<meeting id>.wav` (about 115 MB per hour) |
+| Recordings | `~/Library/Application Support/Notes/Audio/<meeting id>.wav` (two channels, about 230 MB per hour) |
 | Speech models | `~/Library/Application Support/FluidAudio/Models` |
 | LLM weights | `~/.ollama/models` |
 
@@ -68,12 +78,15 @@ transcription downloads about 500 MB of speech models from Hugging Face into
 
 ```
 NotesApp/
-  App/       NotesApp.swift (entry), MeetingStore.swift (record -> transcribe -> notes, deletes)
-  Capture/   AudioRecorder.swift (ScreenCaptureKit mic + system audio, mixer, WAV writer)
-  Speech/    SpeechEngine.swift (FluidAudio ASR + diarization, token/speaker merge)
+  App/       NotesApp.swift (entry, menus, menu bar), MeetingStore.swift (pipeline, deletes, voices,
+             action items), RecordingController (start/stop/pause, live captions), ModelCatalog,
+             Permissions, AudioPlayer, Notifier, GlobalHotKey, AutoRecord/Screenshots (dev hooks)
+  Capture/   AudioRecorder.swift (ScreenCaptureKit mic + system audio, two-channel aligner, WAV writer)
+  Speech/    SpeechEngine.swift (Parakeet/Whisper/Qwen3, diarization, echo gate, voice matching)
   LLM/       OllamaClient.swift (local HTTP, auto-start, pull, streaming chat), Summarizer.swift (settings + prompt)
   Store/     Database.swift (GRDB, migrations), Models.swift (Meeting, Segment)
-  UI/        ContentView, RecordView, MeetingDetailView, SettingsView, Observers
+  UI/        ContentView (sidebar), RecordView, MeetingDetailView, ActionItemsView, SetupView,
+             SettingsView (General, Prompt, Models, Storage, Voices), Theme, Observers
 project.yml  XcodeGen spec; Makefile wraps gen/build/run/setup
 ```
 
@@ -103,6 +116,5 @@ restores it into the vendored copy and ports its downloader to the current API.
 
 ## Not included on purpose
 
-Live captions, cross-meeting speaker names, screen OCR, calendar, email, action-item tracking,
-cloud backends, licensing, auto-update. The store is a plain SQLite file, so any of these can be
+Screen OCR, calendar, email, cloud backends, licensing, auto-update. The store is a plain SQLite file, so any of these can be
 added later without migrating data.

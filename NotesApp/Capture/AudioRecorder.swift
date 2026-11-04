@@ -15,10 +15,13 @@ enum RecorderError: LocalizedError {
 }
 
 /// Records the microphone and system audio through one ScreenCaptureKit stream
-/// (macOS 15+), mixes both to 16 kHz mono, and writes a 16-bit WAV.
+/// (macOS 15+) into a two-channel 16 kHz WAV: left = microphone (you), right = the call.
+/// Keeping the channels apart lets the transcript label lines You / Them and lets the
+/// speech engine suppress the far side's echo in the microphone channel.
 @MainActor
 final class AudioRecorder: ObservableObject {
     @Published private(set) var isRecording = false
+    @Published private(set) var isPaused = false
     @Published private(set) var elapsed: TimeInterval = 0
     @Published private(set) var level: Float = 0          // microphone
     @Published private(set) var systemLevel: Float = 0    // the other side of the call
@@ -27,6 +30,8 @@ final class AudioRecorder: ObservableObject {
     private var sink: CaptureSink?
     private var timer: Timer?
     private var startedAt: Date?
+    private var pausedAt: Date?
+    private var pausedTotal: TimeInterval = 0
 
     func start(to url: URL) async throws {
         guard !isRecording else { throw RecorderError.alreadyRecording }
@@ -40,18 +45,13 @@ final class AudioRecorder: ObservableObject {
         config.sampleRate = 16_000
         config.channelCount = 1
         config.captureMicrophone = true
-        // We never add a .screen output, so keep the video side as small as allowed.
         config.width = 2
         config.height = 2
         config.minimumFrameInterval = CMTime(value: 1, timescale: 1)
 
         let sink = try CaptureSink(url: url)
-        sink.onLevel = { [weak self] value in
-            Task { @MainActor in self?.level = value }
-        }
-        sink.onSystemLevel = { [weak self] value in
-            Task { @MainActor in self?.systemLevel = value }
-        }
+        sink.onLevel = { [weak self] value in Task { @MainActor in self?.level = value } }
+        sink.onSystemLevel = { [weak self] value in Task { @MainActor in self?.systemLevel = value } }
         let stream = SCStream(filter: filter, configuration: config, delegate: sink)
         try stream.addStreamOutput(sink, type: .audio, sampleHandlerQueue: sink.queue)
         try stream.addStreamOutput(sink, type: .microphone, sampleHandlerQueue: sink.queue)
@@ -60,14 +60,35 @@ final class AudioRecorder: ObservableObject {
         self.stream = stream
         self.sink = sink
         startedAt = Date()
+        pausedTotal = 0
+        pausedAt = nil
         elapsed = 0
         isRecording = true
+        isPaused = false
         timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                guard let self, let startedAt = self.startedAt else { return }
-                self.elapsed = Date().timeIntervalSince(startedAt)
+                guard let self, let startedAt = self.startedAt, !self.isPaused else { return }
+                self.elapsed = Date().timeIntervalSince(startedAt) - self.pausedTotal
             }
         }
+    }
+
+    /// Pausing drops incoming audio; the file continues seamlessly on resume.
+    func pause() {
+        guard isRecording, !isPaused, let sink else { return }
+        sink.setPaused(true)
+        pausedAt = Date()
+        isPaused = true
+        level = 0
+        systemLevel = 0
+    }
+
+    func resume() {
+        guard isRecording, isPaused, let sink else { return }
+        if let pausedAt { pausedTotal += Date().timeIntervalSince(pausedAt) }
+        pausedAt = nil
+        sink.setPaused(false)
+        isPaused = false
     }
 
     /// Stops capture and returns the recorded duration in seconds.
@@ -80,29 +101,39 @@ final class AudioRecorder: ObservableObject {
         self.stream = nil
         self.sink = nil
         isRecording = false
+        isPaused = false
         level = 0
         systemLevel = 0
         return duration
     }
+
+    /// Mixed mono audio recorded since the last call, for live captions.
+    func takeLiveSamples() -> [Float] { sink?.takeLive() ?? [] }
 }
 
-/// Receives both audio outputs, converts each to 16 kHz mono float, mixes, writes.
+/// Receives both audio outputs, converts each to 16 kHz mono float, aligns them by
+/// timestamp into two channels, and writes a stereo WAV.
 final class CaptureSink: NSObject, SCStreamOutput, SCStreamDelegate {
     let queue = DispatchQueue(label: "io.stackera.notes.capture")
     var onLevel: ((Float) -> Void)?
     var onSystemLevel: ((Float) -> Void)?
 
     private let file: AVAudioFile
-    private let targetFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false)!
+    private let monoFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false)!
+    private let stereoFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 2, interleaved: false)!
     private var converters: [SCStreamOutputType: AVAudioConverter] = [:]
-    private let mixer = Mixer()
+    private let aligner = ChannelAligner()
     private var framesWritten: Int64 = 0
+    private var paused = false
+    private var pauseStartedAt: Double?
+    private let liveLock = NSLock()
+    private var live: [Float] = []
 
     init(url: URL) throws {
         let settings: [String: Any] = [
             AVFormatIDKey: kAudioFormatLinearPCM,
             AVSampleRateKey: 16_000,
-            AVNumberOfChannelsKey: 1,
+            AVNumberOfChannelsKey: 2,
             AVLinearPCMBitDepthKey: 16,
             AVLinearPCMIsFloatKey: false,
             AVLinearPCMIsBigEndianKey: false,
@@ -111,13 +142,26 @@ final class CaptureSink: NSObject, SCStreamOutput, SCStreamDelegate {
         super.init()
     }
 
+    func setPaused(_ value: Bool) {
+        queue.async { [self] in
+            if value {
+                paused = true
+                pauseStartedAt = CACurrentMediaTime()
+            } else if let since = pauseStartedAt {
+                aligner.shiftOrigin(by: CACurrentMediaTime() - since)
+                pauseStartedAt = nil
+                paused = false
+            }
+        }
+    }
+
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
-        guard type == .audio || type == .microphone, sampleBuffer.isValid,
+        guard !paused, type == .audio || type == .microphone, sampleBuffer.isValid,
               let format = sampleBuffer.formatDescription,
               let samples = floatSamples(from: sampleBuffer, format: format, type: type) else { return }
         if type == .microphone { onLevel?(Self.rms(samples)) } else { onSystemLevel?(Self.rms(samples)) }
         let hostSeconds = CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sampleBuffer))
-        mixer.add(samples, source: type == .microphone ? 0 : 1, at: hostSeconds)
+        aligner.add(samples, channel: type == .microphone ? 0 : 1, at: hostSeconds)
         flush(final: false)
     }
 
@@ -125,10 +169,16 @@ final class CaptureSink: NSObject, SCStreamOutput, SCStreamDelegate {
         NSLog("Capture stream stopped: \(error.localizedDescription)")
     }
 
-    /// Drains everything still buffered. Returns the duration written, in seconds.
     func finish() -> TimeInterval {
         queue.sync { flush(final: true) }
         return Double(framesWritten) / 16_000
+    }
+
+    func takeLive() -> [Float] {
+        liveLock.lock(); defer { liveLock.unlock() }
+        let out = live
+        live.removeAll(keepingCapacity: true)
+        return out
     }
 
     // MARK: - Private
@@ -148,13 +198,13 @@ final class CaptureSink: NSObject, SCStreamOutput, SCStreamDelegate {
             if let existing = converters[type] {
                 converter = existing
             } else {
-                guard let made = AVAudioConverter(from: sourceFormat, to: targetFormat) else { return nil }
+                guard let made = AVAudioConverter(from: sourceFormat, to: monoFormat) else { return nil }
                 converters[type] = made
                 converter = made
             }
-            let ratio = targetFormat.sampleRate / sourceFormat.sampleRate
+            let ratio = monoFormat.sampleRate / sourceFormat.sampleRate
             let capacity = AVAudioFrameCount(Double(frames) * ratio) + 32
-            guard let output = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: capacity) else { return nil }
+            guard let output = AVAudioPCMBuffer(pcmFormat: monoFormat, frameCapacity: capacity) else { return nil }
             var consumed = false
             var error: NSError?
             converter.convert(to: output, error: &error) { _, status in
@@ -169,15 +219,21 @@ final class CaptureSink: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
     private func flush(final: Bool) {
-        let chunk = mixer.drain(lag: final ? 0 : 16_000)
-        guard !chunk.isEmpty,
-              let buffer = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: AVAudioFrameCount(chunk.count)),
+        let (left, right) = aligner.drain(lag: final ? 0 : 16_000)
+        guard !left.isEmpty,
+              let buffer = AVAudioPCMBuffer(pcmFormat: stereoFormat, frameCapacity: AVAudioFrameCount(left.count)),
               let data = buffer.floatChannelData else { return }
-        for (i, sample) in chunk.enumerated() { data[0][i] = max(-1, min(1, sample)) }
-        buffer.frameLength = AVAudioFrameCount(chunk.count)
+        var mixed = [Float](repeating: 0, count: left.count)
+        for i in 0..<left.count {
+            data[0][i] = max(-1, min(1, left[i]))
+            data[1][i] = max(-1, min(1, right[i]))
+            mixed[i] = max(-1, min(1, left[i] + right[i]))
+        }
+        buffer.frameLength = AVAudioFrameCount(left.count)
         do {
             try file.write(from: buffer)
-            framesWritten += Int64(chunk.count)
+            framesWritten += Int64(left.count)
+            liveLock.lock(); live.append(contentsOf: mixed); liveLock.unlock()
         } catch {
             NSLog("WAV write failed: \(error.localizedDescription)")
         }
@@ -190,52 +246,56 @@ final class CaptureSink: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 }
 
-/// Sums two sample streams, placing each buffer by its presentation timestamp so
-/// the mic and system audio stay aligned even though they start at different
-/// moments. Within a source, buffers continue contiguously unless the timestamp
-/// says a gap or drop happened (more than 50 ms off), in which case we re-anchor.
-final class Mixer {
+/// Places each source's buffers by presentation timestamp into its own channel so
+/// microphone and system audio stay aligned even though they start at different moments.
+/// Within a source, buffers continue contiguously unless the timestamp says a gap or
+/// drop happened (more than 50 ms off), in which case we re-anchor.
+final class ChannelAligner {
     private let rate = 16_000.0
     private let lock = NSLock()
-    private var buffer: [Float] = []
-    private var base = 0                  // absolute sample index of buffer[0]
+    private var buffers: [[Float]] = [[], []]
+    private var base = 0                  // absolute sample index of buffers[c][0]
     private var origin: Double?           // host time of absolute sample 0
     private var cursors: [Int?] = [nil, nil]
-    private var reach = 0                 // highest absolute index written so far
+    private var reach = 0
 
-    func add(_ input: [Float], source: Int, at hostSeconds: Double) {
+    func shiftOrigin(by seconds: Double) {
+        lock.lock(); defer { lock.unlock() }
+        if origin != nil { origin! += seconds }
+    }
+
+    func add(_ input: [Float], channel: Int, at hostSeconds: Double) {
         lock.lock(); defer { lock.unlock() }
         if origin == nil { origin = hostSeconds }
         let fromClock = Int(((hostSeconds - origin!) * rate).rounded())
         var start: Int
-        if let cursor = cursors[source], abs(fromClock - cursor) <= 800 {
-            start = cursor
-        } else {
-            start = max(0, fromClock)
-        }
+        if let cursor = cursors[channel], abs(fromClock - cursor) <= 800 { start = cursor } else { start = max(0, fromClock) }
         var samples = input[...]
         if start < base {
             samples = samples.dropFirst(min(base - start, samples.count))
             start = base
         }
         let needed = start - base + samples.count
-        if buffer.count < needed { buffer.append(contentsOf: repeatElement(0, count: needed - buffer.count)) }
+        for c in 0..<2 where buffers[c].count < needed {
+            buffers[c].append(contentsOf: repeatElement(0, count: needed - buffers[c].count))
+        }
         var index = start - base
         for sample in samples {
-            buffer[index] += sample
+            buffers[channel][index] += sample
             index += 1
         }
-        cursors[source] = start + samples.count
+        cursors[channel] = start + samples.count
         reach = max(reach, start + samples.count)
     }
 
-    func drain(lag: Int) -> [Float] {
+    func drain(lag: Int) -> ([Float], [Float]) {
         lock.lock(); defer { lock.unlock() }
-        let available = min(buffer.count, reach - lag - base)
-        guard available > 0 else { return [] }
-        let out = Array(buffer[0..<available])
-        buffer.removeFirst(available)
+        let available = min(buffers[0].count, reach - lag - base)
+        guard available > 0 else { return ([], []) }
+        let left = Array(buffers[0][0..<available]), right = Array(buffers[1][0..<available])
+        buffers[0].removeFirst(available)
+        buffers[1].removeFirst(available)
         base += available
-        return out
+        return (left, right)
     }
 }

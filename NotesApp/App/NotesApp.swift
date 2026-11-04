@@ -35,21 +35,31 @@ struct NotesApp: App {
             CommandMenu("Recording") {
                 Button(recording.isRecording ? "Stop Recording" : "Start Recording") { recording.toggle() }
                     .keyboardShortcut("r", modifiers: [.command])
+                Button(recorder.isPaused ? "Resume" : "Pause") { recording.togglePause() }
+                    .keyboardShortcut("p", modifiers: [.command, .shift])
+                    .disabled(!recording.isRecording)
+            }
+            CommandGroup(replacing: .help) {
+                Button("Setup Assistant…") { store.showSetup = true }
             }
         }
 
         MenuBarExtra {
             if recording.isRecording {
-                Text("Recording · \(Summarizer.clock(recorder.elapsed))")
+                Text(recorder.isPaused ? "Paused · \(Summarizer.clock(recorder.elapsed))" : "Recording · \(Summarizer.clock(recorder.elapsed))")
+                Button(recorder.isPaused ? "Resume" : "Pause") { recording.togglePause() }
                 Button("Stop Recording") { recording.toggle() }
             } else {
-                Button("Start Recording") { recording.toggle() }
+                Button("Start Recording  ⌃⌥⌘R") { recording.toggle() }
             }
             Divider()
             Button("Open Meeting Notes") { NSApp.activate(ignoringOtherApps: true) }
         } label: {
-            Image(systemName: recording.isRecording ? "record.circle.fill" : "waveform.circle")
-                .symbolRenderingMode(recording.isRecording ? .multicolor : .monochrome)
+            HStack(spacing: 4) {
+                Image(systemName: recording.isRecording ? (recorder.isPaused ? "pause.circle.fill" : "record.circle.fill") : "waveform.circle")
+                    .symbolRenderingMode(recording.isRecording && !recorder.isPaused ? .multicolor : .monochrome)
+                if recording.isRecording { Text(Summarizer.clock(recorder.elapsed)).monospacedDigit() }
+            }
         }
 
         Settings {

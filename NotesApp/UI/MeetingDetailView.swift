@@ -11,6 +11,8 @@ struct MeetingDetailView: View {
     @State private var draftTitle = ""
     @State private var confirm: Confirm?
     @State private var showPlayer = false
+    @State private var editingNotes = false
+    @State private var notesDraft = ""
     @State private var renaming: String?? = nil   // .some(speaker) while the popover is open
     @State private var newSpeakerName = ""
 
@@ -66,7 +68,8 @@ struct MeetingDetailView: View {
             }
             .font(.callout)
             .foregroundStyle(.secondary)
-            PipelineStrip(meeting: meeting, progress: store.progress[meeting.id], hasTranscript: !observer.segments.isEmpty,
+            PipelineStrip(meeting: meeting, progress: store.progress[meeting.id], fraction: store.fraction[meeting.id],
+                          stageStarted: store.stageStarted[meeting.id], hasTranscript: !observer.segments.isEmpty,
                           retryTranscribe: { store.retranscribe(meeting) },
                           retryNotes: { Task { await store.summarize(meetingId: meeting.id) } })
             UnderlineTabs(items: [
@@ -84,8 +87,22 @@ struct MeetingDetailView: View {
         ScrollView {
             let text = store.liveSummary[meeting.id] ?? meeting.summary
             VStack(alignment: .leading, spacing: 12) {
-                if let text, !text.isEmpty {
-                    MarkdownText(text)
+                if editingNotes {
+                    TextEditor(text: $notesDraft)
+                        .font(.body.monospaced())
+                        .frame(maxWidth: 760, minHeight: 420)
+                        .scrollContentBackground(.hidden)
+                        .padding(8)
+                        .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 8))
+                    HStack {
+                        Button("Save") { store.updateSummary(meeting, to: notesDraft); editingNotes = false }.buttonStyle(.borderedProminent)
+                        Button("Cancel") { editingNotes = false }
+                        Spacer()
+                        Text("Markdown. Checkboxes: - [ ] task").font(.caption).foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: 760)
+                } else if let text, !text.isEmpty {
+                    MarkdownText(text, onToggleCheckbox: { line in store.toggleActionItem(meetingId: meeting.id, lineIndex: line) })
                         .frame(maxWidth: 760, alignment: .leading)
                     if store.liveSummary[meeting.id] != nil {
                         HStack(spacing: 6) { ProgressView().controlSize(.mini); Text("Writing…").font(.caption).foregroundStyle(.secondary) }
@@ -192,6 +209,13 @@ struct MeetingDetailView: View {
     @ToolbarContentBuilder
     private func toolbarContent(_ meeting: Meeting) -> some ToolbarContent {
         ToolbarItemGroup {
+            if tab == .notes {
+                Button {
+                    if editingNotes { editingNotes = false } else { notesDraft = meeting.summary ?? ""; editingNotes = true }
+                } label: { Label(editingNotes ? "Stop editing" : "Edit notes", systemImage: editingNotes ? "pencil.slash" : "pencil") }
+                .help(editingNotes ? "Discard edits" : "Edit the notes text")
+                .disabled((meeting.summary ?? "").isEmpty && !editingNotes)
+            }
             Button {
                 if showPlayer { showPlayer = false; player.stop() } else { listen(meeting) }
             } label: { Label(showPlayer ? "Hide player" : "Listen", systemImage: showPlayer ? "headphones.slash" : "headphones") }
@@ -259,11 +283,40 @@ struct MeetingDetailView: View {
 struct PipelineStrip: View {
     let meeting: Meeting
     let progress: String?
+    let fraction: Double?
+    let stageStarted: Date?
     let hasTranscript: Bool
     let retryTranscribe: () -> Void
     let retryNotes: () -> Void
+    @State private var now = Date()
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            steps
+            if meeting.status == .transcribing || meeting.status == .summarizing {
+                HStack(spacing: 10) {
+                    if let fraction {
+                        ProgressView(value: fraction).frame(width: 220)
+                        Text("\(Int(fraction * 100))%").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    } else {
+                        ProgressView().frame(width: 220).controlSize(.small)
+                    }
+                    if let stageStarted {
+                        Text(elapsedText(since: stageStarted)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    }
+                }
+                .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { now = $0 }
+            }
+        }
+    }
+
+    private func elapsedText(since: Date) -> String {
+        let s = Int(now.timeIntervalSince(since))
+        let typical = meeting.status == .summarizing ? "notes usually take 1–2 min" : "about 1 min per 30 min of audio"
+        return "\(s / 60):\(String(format: "%02d", s % 60)) elapsed · \(typical)"
+    }
+
+    private var steps: some View {
         HStack(spacing: 10) {
             step("Recorded", done: meeting.status != .recording, active: meeting.status == .recording)
             arrow
@@ -370,11 +423,12 @@ enum SpeakerPalette {
 /// Just enough Markdown for notes: headings, bullets, checkboxes, inline styles.
 struct MarkdownText: View {
     let text: String
-    init(_ text: String) { self.text = text }
+    var onToggleCheckbox: ((Int) -> Void)? = nil
+    init(_ text: String, onToggleCheckbox: ((Int) -> Void)? = nil) { self.text = text; self.onToggleCheckbox = onToggleCheckbox }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            ForEach(Array(text.components(separatedBy: "\n").enumerated()), id: \.offset) { _, raw in
+            ForEach(Array(text.components(separatedBy: "\n").enumerated()), id: \.offset) { index, raw in
                 let line = raw.trimmingCharacters(in: .whitespaces)
                 if line.isEmpty {
                     Spacer().frame(height: 2)
@@ -385,10 +439,16 @@ struct MarkdownText: View {
                 } else if line.hasPrefix("# ") {
                     inline(String(line.dropFirst(2))).font(.title2.bold()).padding(.top, 10)
                 } else if line.hasPrefix("- [ ] ") || line.hasPrefix("- [x] ") || line.hasPrefix("- [X] ") {
+                    let done = !line.hasPrefix("- [ ] ")
                     HStack(alignment: .top, spacing: 8) {
-                        Image(systemName: line.hasPrefix("- [ ] ") ? "square" : "checkmark.square")
-                            .foregroundStyle(.secondary).padding(.top, 2)
-                        inline(String(line.dropFirst(6)))
+                        Button { onToggleCheckbox?(index) } label: {
+                            Image(systemName: done ? "checkmark.square.fill" : "square")
+                                .foregroundStyle(done ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tint))
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(onToggleCheckbox == nil)
+                        .padding(.top, 2)
+                        inline(String(line.dropFirst(6))).strikethrough(done).foregroundStyle(done ? .secondary : .primary)
                     }
                 } else if line.hasPrefix("- ") || line.hasPrefix("* ") || line.hasPrefix("• ") {
                     HStack(alignment: .top, spacing: 8) {

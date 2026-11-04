@@ -48,6 +48,22 @@ final class AppDatabase {
                 t.column("text", .text).notNull()
             }
         }
+        m.registerMigration("v2-voices") { db in
+            try db.create(table: "voiceprint") { t in
+                t.primaryKey("id", .text)
+                t.column("name", .text).notNull().unique()
+                t.column("vector", .blob).notNull()
+                t.column("samples", .integer).notNull().defaults(to: 1)
+                t.column("updatedAt", .datetime).notNull()
+            }
+            try db.create(table: "meetingSpeaker") { t in
+                t.primaryKey("id", .text)
+                t.belongsTo("meeting", onDelete: .cascade).notNull()
+                t.column("speaker", .text).notNull()
+                t.column("vector", .blob).notNull()
+                t.uniqueKey(["meetingId", "speaker"])
+            }
+        }
         return m
     }
 }

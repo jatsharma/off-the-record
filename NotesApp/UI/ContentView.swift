@@ -9,6 +9,9 @@ struct ContentView: View {
     @State private var search = ""
     @State private var pendingDelete: Meeting?
     @Environment(\.openSettings) private var openSettings
+    @State private var hotKey: GlobalHotKey?
+    @State private var dropTargeted = false
+    static let actionItemsId = "__action-items"
 
     private var filtered: [Meeting] {
         let q = search.trimmingCharacters(in: .whitespaces).lowercased()
@@ -38,6 +41,8 @@ struct ContentView: View {
                                            description: Text("Press ⌘R or the record button to capture your first meeting."))
                 } else {
                     List(selection: $selection) {
+                        Label("Action items", systemImage: "checklist")
+                            .tag(Self.actionItemsId)
                         ForEach(groups, id: \.0) { name, items in
                             Section(name) {
                                 ForEach(items) { meeting in
@@ -54,6 +59,9 @@ struct ContentView: View {
                         }
                     }
                     .listStyle(.sidebar)
+                    .onDeleteCommand {
+                        if let id = selection, let m = meetings.items.first(where: { $0.id == id }) { pendingDelete = m }
+                    }
                 }
             }
             .searchable(text: $search, placement: .sidebar, prompt: "Search titles and notes")
@@ -70,12 +78,37 @@ struct ContentView: View {
                 }
             }
         } detail: {
-            if let id = selection {
+            if selection == Self.actionItemsId {
+                ActionItemsView { id in selection = id }
+            } else if let id = selection {
                 MeetingDetailView(meetingId: id)
                     .id(id)
             } else {
                 RecordView()
             }
+        }
+        .onDrop(of: [.fileURL], isTargeted: $dropTargeted) { providers in
+            for provider in providers {
+                _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                    guard let url, ["wav", "mp3", "m4a", "aiff", "aif", "caf", "flac"].contains(url.pathExtension.lowercased()) else { return }
+                    Task { @MainActor in if let m = try? store.importAudio(from: url) { selection = m.id } }
+                }
+            }
+            return true
+        }
+        .overlay {
+            if dropTargeted {
+                ZStack {
+                    Rectangle().fill(.tint.opacity(0.08))
+                    Label("Drop an audio file to import it", systemImage: "square.and.arrow.down")
+                        .font(.title3).padding(16).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                }
+                .allowsHitTesting(false)
+            }
+        }
+        .sheet(isPresented: $store.showSetup) { SetupView() }
+        .onAppear {
+            if hotKey == nil { hotKey = GlobalHotKey { Task { @MainActor in recording.toggle() } } }
         }
         .onAppear { recording.onFinished = { id in selection = id } }
         .confirmationDialog("Delete \"\(pendingDelete?.title ?? "")\" with its audio, transcript and notes?",
@@ -101,6 +134,9 @@ struct MeetingRow: View {
                 .padding(.top, 6)
             VStack(alignment: .leading, spacing: 3) {
                 Text(meeting.title).font(.body.weight(.medium)).lineLimit(2)
+                if let preview = Self.preview(meeting.summary) {
+                    Text(preview).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
                 HStack(spacing: 6) {
                     Text(meeting.createdAt.formatted(.dateTime.hour().minute()))
                     if meeting.durationSeconds > 0 {
@@ -119,6 +155,20 @@ struct MeetingRow: View {
             }
         }
         .padding(.vertical, 3)
+    }
+}
+
+extension MeetingRow {
+    /// First sentence of the summary, skipping headings.
+    static func preview(_ summary: String?) -> String? {
+        guard let summary else { return nil }
+        for raw in summary.components(separatedBy: "\n") {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if line.isEmpty || line.hasPrefix("#") { continue }
+            let clean = line.replacingOccurrences(of: "*", with: "").replacingOccurrences(of: "- [ ] ", with: "")
+            return clean.isEmpty ? nil : clean
+        }
+        return nil
     }
 }
 

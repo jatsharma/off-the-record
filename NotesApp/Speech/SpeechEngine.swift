@@ -30,6 +30,20 @@ struct TranscriptLine {
     var text: String
 }
 
+/// Lines plus one averaged voice embedding per speaker label, for voice memory.
+struct TranscriptResult {
+    var lines: [TranscriptLine]
+    var speakerVectors: [String: [Float]]
+}
+
+/// A known voice the engine may recognise: name and averaged embedding.
+struct KnownVoice {
+    let name: String
+    let vector: [Float]
+}
+
+typealias ProgressReport = @Sendable (_ fraction: Double?, _ status: String) -> Void
+
 enum SpeechError: LocalizedError {
     case notLoaded, unreadableAudio
     var errorDescription: String? {
@@ -94,17 +108,47 @@ actor SpeechEngine {
         }
     }
 
-    func transcribe(file: URL, status: @escaping @Sendable (String) -> Void) async throws -> [TranscriptLine] {
+    func transcribe(file: URL, knownVoices: [KnownVoice] = [], report: @escaping ProgressReport) async throws -> TranscriptResult {
         let engine = AppSettings.engine
+        let status: @Sendable (String) -> Void = { report(nil, $0) }
         try await prepare(engine: engine, status: status)
         guard let diarizer else { throw SpeechError.notLoaded }
 
         status("Reading audio")
-        let samples = try Self.loadSamples(file)
-        let duration = Double(samples.count) / 16_000
+        let channels = try Self.loadChannels(file)
+        let duration = Double(channels[0].count) / 16_000
+
+        // Two-channel recording (left = you, right = the call): transcribe each side on its own.
+        if channels.count == 2, engine == .parakeet, let asr {
+            let mic = Self.suppressEcho(mic: channels[0], system: channels[1])
+            report(0, "Transcribing your side")
+            await asr.setWindowHandler { p in report(0.45 * Double(p.index + 1) / Double(max(1, p.windowCount)), "Transcribing your side") }
+            var state = try TdtDecoderState(decoderLayers: await asr.decoderLayerCount)
+            let mine = try await asr.transcribe(mic, decoderState: &state)
+            let myPieces = Self.pieces(from: mine)
+            let myLines = Self.merge(pieces: myPieces, fullText: mine.text, speakers: [], duration: duration, fixedSpeaker: "You")
+
+            report(0.45, "Transcribing the call")
+            await asr.setWindowHandler { p in report(0.45 + 0.45 * Double(p.index + 1) / Double(max(1, p.windowCount)), "Transcribing the call") }
+            var state2 = try TdtDecoderState(decoderLayers: await asr.decoderLayerCount)
+            let theirs = try await asr.transcribe(channels[1], decoderState: &state2)
+            await asr.setWindowHandler(nil)
+
+            report(0.92, "Identifying speakers")
+            let diar = (try? diarizer.performCompleteDiarization(channels[1], sampleRate: 16_000).segments) ?? []
+            let (names, vectors) = Self.nameSpeakers(diar, knownVoices: knownVoices, singleLabel: "Them")
+            let theirLines = Self.merge(pieces: Self.pieces(from: theirs), fullText: theirs.text, speakers: diar,
+                                        duration: duration, names: names)
+            let lines = (myLines + theirLines).sorted { $0.start < $1.start }
+            return TranscriptResult(lines: lines, speakerVectors: vectors)
+        }
+
+        // Mono recording or imported file: mix channels and run the single-track pipeline.
+        let samples = channels.count == 1 ? channels[0] : Self.mixDown(channels)
 
         if engine == .qwen3 {
-            return try await transcribeByTurns(samples: samples, duration: duration, status: status)
+            let lines = try await transcribeByTurns(samples: samples, duration: duration, status: status)
+            return TranscriptResult(lines: lines, speakerVectors: [:])
         }
 
         let pieces: [TimedPiece]
@@ -114,13 +158,13 @@ actor SpeechEngine {
             throw SpeechError.notLoaded   // handled above
         case .parakeet:
             guard let asr else { throw SpeechError.notLoaded }
-            status("Transcribing with Parakeet")
+            report(0, "Transcribing with Parakeet")
+            await asr.setWindowHandler { p in report(0.9 * Double(p.index + 1) / Double(max(1, p.windowCount)), "Transcribing with Parakeet") }
             var state = try TdtDecoderState(decoderLayers: await asr.decoderLayerCount)
             let result = try await asr.transcribe(samples, decoderState: &state)
+            await asr.setWindowHandler(nil)
             fullText = result.text
-            pieces = (result.tokenTimings ?? []).map {
-                TimedPiece(text: $0.token.replacingOccurrences(of: "\u{2581}", with: " "), start: $0.startTime, end: $0.endTime)
-            }
+            pieces = Self.pieces(from: result)
         case .whisper:
             guard let whisper else { throw SpeechError.notLoaded }
             status("Transcribing with Whisper")
@@ -147,7 +191,7 @@ actor SpeechEngine {
             pieces = collected.sorted { $0.start < $1.start }
         }
 
-        status("Identifying speakers")
+        report(0.92, "Identifying speakers")
         let speakers: [TimedSpeakerSegment]
         do {
             speakers = try diarizer.performCompleteDiarization(samples, sampleRate: 16_000).segments
@@ -155,7 +199,91 @@ actor SpeechEngine {
             NSLog("Diarization failed, continuing without speakers: \(error)")
             speakers = []
         }
-        return Self.merge(pieces: pieces, fullText: fullText, speakers: speakers, duration: duration)
+        let (names, vectors) = Self.nameSpeakers(speakers, knownVoices: knownVoices, singleLabel: nil)
+        let lines = Self.merge(pieces: pieces, fullText: fullText, speakers: speakers, duration: duration, names: names)
+        return TranscriptResult(lines: lines, speakerVectors: vectors)
+    }
+
+    /// Quick pass over a short mixed chunk for live captions while recording.
+    func quickTranscribe(_ samples: [Float]) async -> String {
+        guard samples.count >= 8_000 else { return "" }
+        do {
+            try await prepare(engine: .parakeet, status: { _ in })
+            guard let asr else { return "" }
+            var state = try TdtDecoderState(decoderLayers: await asr.decoderLayerCount)
+            return try await asr.transcribe(samples, decoderState: &state).text.trimmingCharacters(in: .whitespacesAndNewlines)
+        } catch {
+            return ""
+        }
+    }
+
+    // MARK: - Speaker naming and voice memory
+
+    /// Maps diarizer cluster ids to display names. Clusters whose averaged embedding is close
+    /// to a known voice take that name; the rest become Speaker N (or `singleLabel` when the
+    /// track has exactly one unknown speaker). Also returns the averaged vector per name.
+    private static func nameSpeakers(_ segments: [TimedSpeakerSegment], knownVoices: [KnownVoice],
+                                     singleLabel: String?) -> ([String: String], [String: [Float]]) {
+        var byCluster: [String: [[Float]]] = [:]
+        var order: [String] = []
+        for seg in segments.sorted(by: { $0.startTimeSeconds < $1.startTimeSeconds }) {
+            if byCluster[seg.speakerId] == nil { order.append(seg.speakerId) }
+            byCluster[seg.speakerId, default: []].append(seg.embedding)
+        }
+        var names: [String: String] = [:]
+        var vectors: [String: [Float]] = [:]
+        var taken = Set<String>()
+        var unknownIndex = 0
+        let unknownCount = order.count
+        for cluster in order {
+            let centroid = Vectors.mean(byCluster[cluster] ?? [])
+            var name: String? = nil
+            if !centroid.isEmpty {
+                let best = knownVoices.filter { !taken.contains($0.name) }
+                    .map { ($0.name, Vectors.cosine($0.vector, centroid)) }
+                    .max { $0.1 < $1.1 }
+                if let best, best.1 >= 0.62 { name = best.0 }
+            }
+            if name == nil {
+                unknownIndex += 1
+                name = (singleLabel != nil && unknownCount == 1) ? singleLabel! : "Speaker \(unknownIndex)"
+            }
+            taken.insert(name!)
+            names[cluster] = name!
+            if !centroid.isEmpty { vectors[name!] = centroid }
+        }
+        return (names, vectors)
+    }
+
+    private static func pieces(from result: ASRResult) -> [TimedPiece] {
+        (result.tokenTimings ?? []).map {
+            TimedPiece(text: $0.token.replacingOccurrences(of: "\u{2581}", with: " "), start: $0.startTime, end: $0.endTime)
+        }
+    }
+
+    private static func mixDown(_ channels: [[Float]]) -> [Float] {
+        let n = channels.map(\.count).min() ?? 0
+        var out = [Float](repeating: 0, count: n)
+        for c in channels { for i in 0..<n { out[i] += c[i] } }
+        return out.map { max(-1, min(1, $0)) }
+    }
+
+    /// Zeroes 20 ms frames of the microphone where the call is clearly the louder source,
+    /// so the far side's echo through speakers is not transcribed as "You".
+    static func suppressEcho(mic: [Float], system: [Float]) -> [Float] {
+        let frame = 320
+        var out = mic
+        var i = 0
+        while i < min(mic.count, system.count) {
+            let end = min(i + frame, mic.count, system.count)
+            var m: Float = 0, s: Float = 0
+            for j in i..<end { m += mic[j] * mic[j]; s += system[j] * system[j] }
+            if s > 0.0001 * Float(end - i), s > 4 * m {      // call at least 6 dB louder than mic
+                for j in i..<end { out[j] = 0 }
+            }
+            i = end
+        }
+        return out
     }
 
     // MARK: - Turn-by-turn transcription (engines without timestamps, 30 s max input)
@@ -237,16 +365,22 @@ actor SpeechEngine {
 
     // MARK: - Audio loading
 
-    private static func loadSamples(_ url: URL) throws -> [Float] {
+    /// Returns one array per channel at 16 kHz. Two-channel recordings keep (mic, call) apart;
+    /// anything else is resampled to a single mono track.
+    private static func loadChannels(_ url: URL) throws -> [[Float]] {
         let file = try AVAudioFile(forReading: url)
         let source = file.processingFormat
         guard let input = AVAudioPCMBuffer(pcmFormat: source, frameCapacity: AVAudioFrameCount(file.length)) else {
             throw SpeechError.unreadableAudio
         }
         try file.read(into: input)
-        if source.sampleRate == 16_000, source.channelCount == 1, let data = input.floatChannelData {
-            return Array(UnsafeBufferPointer(start: data[0], count: Int(input.frameLength)))
+        if source.sampleRate == 16_000, let data = input.floatChannelData, source.channelCount == 1 || source.channelCount == 2 {
+            return (0..<Int(source.channelCount)).map { Array(UnsafeBufferPointer(start: data[$0], count: Int(input.frameLength))) }
         }
+        return [try loadMono(input, source: source)]
+    }
+
+    private static func loadMono(_ input: AVAudioPCMBuffer, source: AVAudioFormat) throws -> [Float] {
         guard let target = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false),
               let converter = AVAudioConverter(from: source, to: target) else { throw SpeechError.unreadableAudio }
         let capacity = AVAudioFrameCount(Double(input.frameLength) * 16_000 / source.sampleRate) + 32
@@ -266,13 +400,10 @@ actor SpeechEngine {
 
     // MARK: - Merge tokens with speaker turns
 
-    private static func merge(pieces: [TimedPiece], fullText: String, speakers: [TimedSpeakerSegment], duration: Double) -> [TranscriptLine] {
-        // Name speakers in order of first appearance.
-        var names: [String: String] = [:]
-        for segment in speakers.sorted(by: { $0.startTimeSeconds < $1.startTimeSeconds }) where names[segment.speakerId] == nil {
-            names[segment.speakerId] = "Speaker \(names.count + 1)"
-        }
+    private static func merge(pieces: [TimedPiece], fullText: String, speakers: [TimedSpeakerSegment], duration: Double,
+                              names: [String: String] = [:], fixedSpeaker: String? = nil) -> [TranscriptLine] {
         func speaker(at time: Double) -> String? {
+            if let fixedSpeaker { return fixedSpeaker }
             let t = Float(time)
             func distance(_ s: TimedSpeakerSegment) -> Float { max(0, s.startTimeSeconds - t, t - s.endTimeSeconds) }
             guard let nearest = speakers.min(by: { distance($0) < distance($1) }), distance(nearest) < 2 else { return nil }
@@ -281,7 +412,7 @@ actor SpeechEngine {
 
         guard !pieces.isEmpty else {
             let text = fullText.trimmingCharacters(in: .whitespacesAndNewlines)
-            return text.isEmpty ? [] : [TranscriptLine(start: 0, end: duration, speaker: nil, text: text)]
+            return text.isEmpty ? [] : [TranscriptLine(start: 0, end: duration, speaker: fixedSpeaker, text: text)]
         }
 
         var lines: [TranscriptLine] = []

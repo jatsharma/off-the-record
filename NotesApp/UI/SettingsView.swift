@@ -6,6 +6,8 @@ struct SettingsView: View {
             GeneralSettings().tabItem { Label("General", systemImage: "gearshape") }
             PromptSettings().tabItem { Label("Notes prompt", systemImage: "text.alignleft") }
             ModelsSettings().tabItem { Label("Models", systemImage: "internaldrive") }
+            StorageSettings().tabItem { Label("Storage", systemImage: "externaldrive") }
+            VoicesSettings().tabItem { Label("Voices", systemImage: "person.wave.2") }
         }
         .frame(width: 640, height: 560)
     }
@@ -21,9 +23,15 @@ struct GeneralSettings: View {
 
     @AppStorage(AppSettings.accentKey) private var accent = AccentTheme.ocean.rawValue
     @AppStorage(AppSettings.appearanceKey) private var appearance = Appearance.system.rawValue
+    @AppStorage("captions.live") private var liveCaptions = true
 
     var body: some View {
         Form {
+            Section("Recording") {
+                Toggle("Live captions while recording", isOn: $liveCaptions)
+                Text("Rough text every 12 seconds from the Parakeet model. The final transcript is always made from the whole recording afterwards.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Section("Appearance") {
                 Picker("Theme", selection: $appearance) {
                     ForEach(Appearance.allCases) { Text($0.name).tag($0.rawValue) }
@@ -180,5 +188,75 @@ struct ModelsSettings: View {
         defer { busy.remove(entry.id) }
         try? await ModelCatalog.delete(entry)
         sizes[entry.id] = await ModelCatalog.sizeOnDisk(entry)
+    }
+}
+
+/// Audio takes about 230 MB per hour as a two-channel WAV. Transcripts and notes are tiny.
+struct StorageSettings: View {
+    @EnvironmentObject private var store: MeetingStore
+    @State private var totals: (count: Int, bytes: Int64) = (0, 0)
+    @State private var days = 30
+    @State private var lastDeleted: Int?
+
+    var body: some View {
+        Form {
+            Section("Recordings") {
+                LabeledContent("Audio on disk", value: "\(ByteCountFormatter.string(fromByteCount: totals.bytes, countStyle: .file)) in \(totals.count) meeting\(totals.count == 1 ? "" : "s")")
+                LabeledContent("Folder", value: AppDatabase.audioDirectory.path.replacingOccurrences(of: NSHomeDirectory(), with: "~"))
+                Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([AppDatabase.audioDirectory]) }
+            }
+            Section {
+                HStack {
+                    Picker("Delete audio older than", selection: $days) {
+                        Text("7 days").tag(7); Text("30 days").tag(30); Text("90 days").tag(90); Text("1 year").tag(365)
+                    }
+                    .frame(maxWidth: 320)
+                    Button("Delete now") {
+                        lastDeleted = store.deleteAudio(olderThanDays: days)
+                        totals = store.audioTotals()
+                    }
+                }
+                if let lastDeleted { Text("Removed audio from \(lastDeleted) meeting\(lastDeleted == 1 ? "" : "s"). Transcripts and notes were kept.").font(.caption).foregroundStyle(.secondary) }
+            } footer: {
+                Text("Only the WAV files are removed. Notes and transcripts stay; those meetings just cannot be re-transcribed or played back.")
+            }
+        }
+        .formStyle(.grouped)
+        .onAppear { totals = store.audioTotals() }
+    }
+}
+
+/// Names the app has learned for voices. Rename a speaker in any meeting to add one.
+struct VoicesSettings: View {
+    @EnvironmentObject private var store: MeetingStore
+    @State private var voices: [VoicePrint] = []
+
+    var body: some View {
+        Form {
+            Section {
+                if voices.isEmpty {
+                    Text("No voices yet. In a meeting's transcript, click a speaker label and give it a name; that voice is then recognised in later meetings.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(voices) { vp in
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(vp.name).font(.body.weight(.medium))
+                                Text("Learned from \(vp.samples) meeting\(vp.samples == 1 ? "" : "s") · updated \(vp.updatedAt.formatted(date: .abbreviated, time: .omitted))")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button("Forget") { store.deleteVoicePrint(vp); voices = store.voicePrints() }
+                        }
+                    }
+                }
+            } header: {
+                Text("Known voices")
+            } footer: {
+                Text("Matching is by voice similarity and is not perfect. A wrong match is fixed by renaming the speaker again in that meeting, which also improves the stored voice.")
+            }
+        }
+        .formStyle(.grouped)
+        .onAppear { voices = store.voicePrints() }
     }
 }

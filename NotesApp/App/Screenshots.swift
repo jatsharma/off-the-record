@@ -26,6 +26,9 @@ enum Screenshots {
             try? await Task.sleep(for: .seconds(1.2))
             await capture(mainWindow(), to: dir.appendingPathComponent("2-meeting.png"))
         }
+        select("__action-items")
+        try? await Task.sleep(for: .seconds(1.2))
+        await capture(mainWindow(), to: dir.appendingPathComponent("4-actions.png"))
         openSettings()
         try? await Task.sleep(for: .seconds(1.5))
         try? await Task.sleep(for: .seconds(1.5))

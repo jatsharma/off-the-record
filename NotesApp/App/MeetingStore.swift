@@ -9,6 +9,13 @@ final class MeetingStore: ObservableObject {
 
     /// One status line per meeting while it is being processed.
     @Published var progress: [String: String] = [:]
+    /// 0...1 while transcribing, nil when indeterminate.
+    @Published var fraction: [String: Double] = [:]
+    /// When the current stage started, for the elapsed/estimate readout.
+    @Published var stageStarted: [String: Date] = [:]
+    /// Live captions for the meeting currently being recorded.
+    @Published var liveCaptions: [String] = []
+    @Published var showSetup = !UserDefaults.standard.bool(forKey: "setup.done")
     /// Summary text as it streams in, before it is saved.
     @Published var liveSummary: [String: String] = [:]
 
@@ -70,10 +77,15 @@ final class MeetingStore: ObservableObject {
         guard let meeting = fetch(meetingId), let audio = meeting.audioURL else { return }
         do {
             update(meetingId) { $0.status = .transcribing }
-            let lines = try await SpeechEngine.shared.transcribe(file: audio) { [weak self] text in
-                Task { @MainActor in self?.progress[meetingId] = text }
+            stageStarted[meetingId] = Date()
+            fraction[meetingId] = 0
+            let known = knownVoices()
+            let result = try await SpeechEngine.shared.transcribe(file: audio, knownVoices: known) { [weak self] fraction, text in
+                Task { @MainActor in self?.progress[meetingId] = text; self?.fraction[meetingId] = fraction }
             }
-            try saveTranscript(lines, for: meetingId)
+            fraction[meetingId] = nil
+            try saveTranscript(result.lines, for: meetingId)
+            saveSpeakerVectors(result.speakerVectors, for: meetingId)
             await summarize(meetingId: meetingId)
         } catch {
             fail(meetingId, error)
@@ -89,6 +101,8 @@ final class MeetingStore: ObservableObject {
             return
         }
         update(meetingId) { $0.status = .summarizing; $0.errorMessage = nil }
+        stageStarted[meetingId] = Date()
+        fraction[meetingId] = nil
         liveSummary[meetingId] = ""
         do {
             let client = OllamaClient(baseURL: AppSettings.baseURL)
@@ -148,16 +162,116 @@ final class MeetingStore: ObservableObject {
 
     // MARK: Speakers and export
 
+    /// Renames a speaker in one meeting and teaches the name to voice memory, so the same
+    /// voice is labelled automatically in later meetings.
     func renameSpeaker(_ old: String?, to new: String, in meetingId: String) {
         let clean = new.trimmingCharacters(in: .whitespaces)
         guard !clean.isEmpty else { return }
         try? db.pool.write { db in
             if let old {
                 try db.execute(sql: "update segment set speaker = ? where meetingId = ? and speaker = ?", arguments: [clean, meetingId, old])
+                if var ms = try MeetingSpeaker.filter(Column("meetingId") == meetingId && Column("speaker") == old).fetchOne(db) {
+                    ms.speaker = clean
+                    try ms.update(db)
+                    let vector = Vectors.floats(ms.vector)
+                    if clean != "You", clean != "Them", !clean.hasPrefix("Speaker ") {
+                        if var vp = try VoicePrint.filter(Column("name") == clean).fetchOne(db) {
+                            let merged = zip(Vectors.floats(vp.vector), vector).map { ($0 * Float(vp.samples) + $1) / Float(vp.samples + 1) }
+                            vp.vector = Vectors.data(merged); vp.samples += 1; vp.updatedAt = Date()
+                            try vp.update(db)
+                        } else {
+                            try VoicePrint(id: UUID().uuidString, name: clean, vector: ms.vector, samples: 1, updatedAt: Date()).insert(db)
+                        }
+                    }
+                }
             } else {
                 try db.execute(sql: "update segment set speaker = ? where meetingId = ? and speaker is null", arguments: [clean, meetingId])
             }
         }
+    }
+
+    func knownVoices() -> [KnownVoice] {
+        (try? db.pool.read { try VoicePrint.fetchAll($0) })?.map { KnownVoice(name: $0.name, vector: Vectors.floats($0.vector)) } ?? []
+    }
+
+    func voicePrints() -> [VoicePrint] {
+        (try? db.pool.read { try VoicePrint.order(Column("name")).fetchAll($0) }) ?? []
+    }
+
+    func deleteVoicePrint(_ vp: VoicePrint) {
+        _ = try? db.pool.write { try vp.delete($0) }
+    }
+
+    private func saveSpeakerVectors(_ vectors: [String: [Float]], for meetingId: String) {
+        try? db.pool.write { db in
+            try MeetingSpeaker.filter(Column("meetingId") == meetingId).deleteAll(db)
+            for (speaker, v) in vectors where !v.isEmpty {
+                try MeetingSpeaker(id: UUID().uuidString, meetingId: meetingId, speaker: speaker, vector: Vectors.data(v)).insert(db)
+            }
+        }
+    }
+
+    // MARK: Notes editing and action items
+
+    func updateSummary(_ meeting: Meeting, to text: String) {
+        update(meeting.id) { $0.summary = text }
+    }
+
+    /// Flips the checkbox on one `- [ ]` / `- [x]` line of the notes.
+    func toggleActionItem(meetingId: String, lineIndex: Int) {
+        guard let meeting = fetch(meetingId), let summary = meeting.summary else { return }
+        var lines = summary.components(separatedBy: "\n")
+        guard lines.indices.contains(lineIndex) else { return }
+        let line = lines[lineIndex]
+        if line.hasPrefix("- [ ] ") { lines[lineIndex] = "- [x] " + line.dropFirst(6) }
+        else if line.hasPrefix("- [x] ") || line.hasPrefix("- [X] ") { lines[lineIndex] = "- [ ] " + line.dropFirst(6) }
+        else { return }
+        update(meetingId) { $0.summary = lines.joined(separator: "\n") }
+    }
+
+    struct ActionItem: Identifiable {
+        let id: String
+        let meetingId: String
+        let meetingTitle: String
+        let meetingDate: Date
+        let lineIndex: Int
+        let text: String
+        let done: Bool
+    }
+
+    func allActionItems() -> [ActionItem] {
+        let meetings = (try? db.pool.read { try Meeting.order(Column("createdAt").desc).fetchAll($0) }) ?? []
+        var out: [ActionItem] = []
+        for m in meetings {
+            for (i, line) in (m.summary ?? "").components(separatedBy: "\n").enumerated() {
+                let open = line.hasPrefix("- [ ] "), done = line.hasPrefix("- [x] ") || line.hasPrefix("- [X] ")
+                guard open || done else { continue }
+                out.append(ActionItem(id: "\(m.id)#\(i)", meetingId: m.id, meetingTitle: m.title, meetingDate: m.createdAt,
+                                      lineIndex: i, text: String(line.dropFirst(6)), done: done))
+            }
+        }
+        return out
+    }
+
+    // MARK: Storage
+
+    func audioTotals() -> (count: Int, bytes: Int64) {
+        let meetings = (try? db.pool.read { try Meeting.filter(Column("audioPath") != nil).fetchAll($0) }) ?? []
+        return (meetings.count, meetings.reduce(0) { $0 + audioBytes($1) })
+    }
+
+    /// Deletes audio files (not transcripts or notes) of meetings older than `days`.
+    @discardableResult
+    func deleteAudio(olderThanDays days: Int) -> Int {
+        let cutoff = Calendar.current.date(byAdding: .day, value: -days, to: Date()) ?? Date()
+        let old = (try? db.pool.read { try Meeting.filter(Column("audioPath") != nil && Column("createdAt") < cutoff).fetchAll($0) }) ?? []
+        for m in old { deleteAudio(m) }
+        return old.count
+    }
+
+    func finishSetup() {
+        UserDefaults.standard.set(true, forKey: "setup.done")
+        showSetup = false
     }
 
     func markdown(for meeting: Meeting, segments: [Segment]) -> String {
@@ -234,6 +348,7 @@ final class MeetingStore: ObservableObject {
     private func fail(_ id: String, _ error: Error) {
         update(id) { $0.status = .failed; $0.errorMessage = error.localizedDescription }
         progress[id] = nil
+        fraction[id] = nil
         Notifier.post(title: "Processing failed", body: error.localizedDescription)
     }
 }

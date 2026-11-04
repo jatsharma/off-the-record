@@ -3,6 +3,8 @@ import SwiftUI
 struct RecordView: View {
     @EnvironmentObject private var recorder: AudioRecorder
     @EnvironmentObject private var recording: RecordingController
+    @EnvironmentObject private var store: MeetingStore
+    @AppStorage("captions.live") private var liveCaptions = true
     @State private var micState = Permissions.microphone
     @State private var systemState = Permissions.systemAudio
 
@@ -17,8 +19,18 @@ struct RecordView: View {
                         .monospacedDigit()
                         .foregroundStyle(recorder.isRecording ? .primary : .tertiary)
                         .contentTransition(.numericText())
-                    RecordButton(isRecording: recorder.isRecording, busy: recording.busy) { recording.toggle() }
-                    Text(recorder.isRecording ? "Recording. Press to stop." : "Press to start · ⌘R")
+                    HStack(spacing: 18) {
+                        if recorder.isRecording {
+                            Button { recording.togglePause() } label: {
+                                Image(systemName: recorder.isPaused ? "play.fill" : "pause.fill").font(.title3).frame(width: 44, height: 44)
+                            }
+                            .buttonStyle(.bordered).clipShape(Circle())
+                            .help(recorder.isPaused ? "Resume" : "Pause (keeps one file)")
+                        }
+                        RecordButton(isRecording: recorder.isRecording, busy: recording.busy) { recording.toggle() }
+                        if recorder.isRecording { Color.clear.frame(width: 44, height: 44) }
+                    }
+                    Text(recorder.isPaused ? "Paused" : (recorder.isRecording ? "Recording. Press to stop." : "Press to start · ⌘R here, ⌃⌥⌘R anywhere"))
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
@@ -45,6 +57,11 @@ struct RecordView: View {
                 .onReceive(Timer.publish(every: 2, on: .main, in: .common).autoconnect()) { _ in
                     micState = Permissions.microphone
                     systemState = Permissions.systemAudio
+                }
+
+                if recorder.isRecording, liveCaptions {
+                    LiveCaptions(lines: store.liveCaptions)
+                        .frame(maxWidth: 560)
                 }
 
                 if let error = recording.error {
@@ -162,5 +179,37 @@ struct LevelBar: View {
         }
         .frame(height: 8)
         .animation(.linear(duration: 0.1), value: level)
+    }
+}
+
+/// Rolling captions from short chunks while recording. Indicative only; the final
+/// transcript is produced from the whole file afterwards.
+struct LiveCaptions: View {
+    let lines: [String]
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Label("Live captions", systemImage: "captions.bubble").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                Spacer()
+                Text("rough, every 12 s").font(.caption2).foregroundStyle(.tertiary)
+            }
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 4) {
+                        if lines.isEmpty {
+                            Text("Listening…").foregroundStyle(.tertiary)
+                        }
+                        ForEach(Array(lines.enumerated()), id: \.offset) { i, line in
+                            Text(line).foregroundStyle(i == lines.count - 1 ? .primary : .secondary).id(i)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .onChange(of: lines.count) { _, n in withAnimation { proxy.scrollTo(n - 1, anchor: .bottom) } }
+            }
+            .frame(height: 110)
+        }
+        .padding(12)
+        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 10))
     }
 }
