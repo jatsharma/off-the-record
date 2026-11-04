@@ -7,6 +7,11 @@ enum AppSettings {
     static let promptKey = "llm.basePrompt"
     static let contextKey = "llm.contextTokens"
 
+    static let engineKey = "asr.engine"            // "parakeet" | "whisper"
+    static let whisperModelKey = "asr.whisperModel"
+    static let languageKey = "asr.language"        // "" = auto-detect (Whisper only)
+
+    static let defaultWhisperModel = "openai_whisper-large-v3-v20240930_turbo"
     static let defaultModel = "gemma4:e4b"
     static let defaultURL = "http://127.0.0.1:11434"
     static let defaultContextTokens = 32_768
@@ -37,6 +42,9 @@ enum AppSettings {
     {{transcript}}
     """
 
+    static var engine: ASREngine { ASREngine(rawValue: UserDefaults.standard.string(forKey: engineKey) ?? "") ?? .parakeet }
+    static var whisperModel: String { UserDefaults.standard.string(forKey: whisperModelKey).flatMap { $0.isEmpty ? nil : $0 } ?? defaultWhisperModel }
+    static var language: String? { UserDefaults.standard.string(forKey: languageKey).flatMap { $0.isEmpty ? nil : $0 } }
     static var model: String { UserDefaults.standard.string(forKey: modelKey).flatMap { $0.isEmpty ? nil : $0 } ?? defaultModel }
     static var baseURL: URL { URL(string: UserDefaults.standard.string(forKey: urlKey) ?? "") ?? URL(string: defaultURL)! }
     static var prompt: String { UserDefaults.standard.string(forKey: promptKey).flatMap { $0.isEmpty ? nil : $0 } ?? defaultPrompt }

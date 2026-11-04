@@ -77,6 +77,19 @@ NotesApp/
 project.yml  XcodeGen spec; Makefile wraps gen/build/run/setup
 ```
 
+## Speech engines
+
+Settings → Speech recognition switches between two engines:
+
+| Engine | Speed on M1 Pro (32-minute file) | Languages | Notes |
+| --- | --- | --- | --- |
+| Parakeet TDT 0.6b v3 (default) | about 70 s incl. diarization | English + 24 European | Best English accuracy and coverage; Hindi comes out as phonetic English |
+| Whisper large-v3-turbo | about 7 min incl. diarization | 99 incl. Hindi | Writes Hindi in Devanagari when auto-detecting; drops about half the words on code-switched Hinglish audio; forcing `en` replaces Hindi with "foreign" |
+
+Measured on a real Hindi-English meeting: Parakeet captured 3,144 words, Whisper (auto) 1,461
+of which 391 in Devanagari, Whisper (forced en) 1,120. Neither handles Hinglish well; Parakeet
+gives the more useful notes today.
+
 ## Settings
 
 - **Model** – any Ollama tag. `gemma4:e4b` by default; `gemma4:e2b` if memory is tight.

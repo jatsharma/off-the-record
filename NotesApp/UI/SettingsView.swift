@@ -5,9 +5,23 @@ struct SettingsView: View {
     @AppStorage(AppSettings.urlKey) private var url = AppSettings.defaultURL
     @AppStorage(AppSettings.contextKey) private var contextTokens = AppSettings.defaultContextTokens
     @AppStorage(AppSettings.promptKey) private var prompt = AppSettings.defaultPrompt
+    @AppStorage(AppSettings.engineKey) private var engine = ASREngine.parakeet.rawValue
+    @AppStorage(AppSettings.whisperModelKey) private var whisperModel = AppSettings.defaultWhisperModel
+    @AppStorage(AppSettings.languageKey) private var language = ""
 
     var body: some View {
         Form {
+            Section("Speech recognition") {
+                Picker("Engine", selection: $engine) {
+                    ForEach(ASREngine.allCases) { Text($0.label).tag($0.rawValue) }
+                }
+                if engine == ASREngine.whisper.rawValue {
+                    TextField("Whisper model", text: $whisperModel, prompt: Text(AppSettings.defaultWhisperModel))
+                    TextField("Language code (blank = auto-detect)", text: $language, prompt: Text("auto"))
+                    Text("Models come from argmaxinc/whisperkit-coreml on Hugging Face. For Hindi-English meetings leave the language blank; Whisper writes Hindi in Devanagari and English in Latin script.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
             Section("Language model (Ollama)") {
                 TextField("Model", text: $model, prompt: Text(AppSettings.defaultModel))
                 TextField("Server URL", text: $url, prompt: Text(AppSettings.defaultURL))
