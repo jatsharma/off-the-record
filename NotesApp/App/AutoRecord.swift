@@ -17,8 +17,19 @@ enum AutoRecord {
         return args[i + 1]
     }
 
+    /// `NotesApp --summarize <meeting id>` regenerates notes for an existing meeting.
+    static var summarizeId: String? {
+        let args = CommandLine.arguments
+        guard let i = args.firstIndex(of: "--summarize"), i + 1 < args.count else { return nil }
+        return args[i + 1]
+    }
+
     @MainActor
     static func run(recorder: AudioRecorder, store: MeetingStore, select: @escaping (String) -> Void) async {
+        if let id = summarizeId {
+            select(id)
+            await store.summarize(meetingId: id)
+        }
         if let path = importPath {
             do {
                 let meeting = try store.importAudio(from: URL(fileURLWithPath: path))

@@ -35,6 +35,11 @@ enum AppSettings {
     - [ ] what — who — when (only if said)
 
     Speaker labels like "Speaker 1" are unknown names; keep them as they are.
+    The transcript may mix Hindi (Devanagari) and English. Write the notes in English and carry over \
+    every specific from the Hindi parts: numbers, counts, distances, names of systems, who owns what.
+    Prefer concrete statements ("two local servers per plaza, failover on crash") over generalities \
+    ("the system is designed to be robust"). Never write an empty bullet or an empty checkbox; if there \
+    are no action items, omit the section.
 
     Meeting: {{title}} on {{date}}
 
