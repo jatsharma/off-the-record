@@ -26,7 +26,30 @@ make setup   # one-time: installs Ollama and pulls gemma4:e4b (about 6.6 GB)
 make run     # xcodegen + xcodebuild (Debug, ad-hoc signed) + open the app
 ```
 
-Or `make gen` and open `NotesApp.xcodeproj` in Xcode and press Run. `make deps` vendors FluidAudio into `Vendor/` first (Xcode 26 ignores SwiftPM package traits, so the vendored copy drops the traits manifest to keep the diarizer compiled in).
+Or `make gen` and open `NotesApp.xcodeproj` in Xcode and press Run. For a scripted smoke test, `NotesApp --auto-record 30` records for 30 seconds on launch and runs the pipeline. `make deps` vendors FluidAudio into `Vendor/` first (Xcode 26 ignores SwiftPM package traits, so the vendored copy drops the traits manifest to keep the diarizer compiled in).
+
+### Code signing (do this once)
+
+macOS ties the Screen & System Audio Recording permission to the app's code signature. An
+ad-hoc signed app gets a new signature on every build, so the permission would break after each
+rebuild. Create a local signing certificate once:
+
+```bash
+sh scripts/make-dev-cert.sh
+```
+
+It creates a self-signed "Meeting Notes Dev" certificate in your login keychain, trusted for code
+signing only (Keychain asks for your password at the trust step). `project.yml` already signs with
+that name. If you have an Apple Development certificate instead, put its name in
+`CODE_SIGN_IDENTITY` and your team in `DEVELOPMENT_TEAM`.
+
+Hardened runtime is off in `project.yml` because its library validation rejects the app's own
+dylibs when the certificate has no Team ID. Turn it on only for a Developer ID build.
+
+If a build still cannot record after a permission change, quit and relaunch the app: a permission
+request that was already waiting does not pick up the new setting. If macOS shows the app as
+allowed but it still cannot record, remove the entry with the "−" button in System Settings so a
+fresh prompt appears.
 
 On first launch macOS asks for Microphone and System Audio Recording permission. The first
 transcription downloads about 500 MB of speech models from Hugging Face into

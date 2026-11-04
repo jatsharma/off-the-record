@@ -3,6 +3,7 @@ import SwiftUI
 struct ContentView: View {
     @StateObject private var meetings = MeetingsObserver()
     @EnvironmentObject private var recorder: AudioRecorder
+    @EnvironmentObject private var store: MeetingStore
     @State private var selection: String?
 
     var body: some View {
@@ -30,6 +31,7 @@ struct ContentView: View {
                 RecordView { newId in selection = newId }
             }
         }
+        .task { await AutoRecord.run(recorder: recorder, store: store) { selection = $0 } }
     }
 }
 

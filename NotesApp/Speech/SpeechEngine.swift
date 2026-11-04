@@ -83,13 +83,14 @@ actor SpeechEngine {
               let converter = AVAudioConverter(from: source, to: target) else { throw SpeechError.unreadableAudio }
         let capacity = AVAudioFrameCount(Double(input.frameLength) * 16_000 / source.sampleRate) + 32
         guard let output = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: capacity) else { throw SpeechError.unreadableAudio }
-        var consumed = false
+        nonisolated(unsafe) var consumed = false
+        nonisolated(unsafe) let inputBuffer = input
         var error: NSError?
         converter.convert(to: output, error: &error) { _, status in
             if consumed { status.pointee = .endOfStream; return nil }
             consumed = true
             status.pointee = .haveData
-            return input
+            return inputBuffer
         }
         guard error == nil, let data = output.floatChannelData else { throw SpeechError.unreadableAudio }
         return Array(UnsafeBufferPointer(start: data[0], count: Int(output.frameLength)))
@@ -105,12 +106,9 @@ actor SpeechEngine {
         }
         func speaker(at time: Double) -> String? {
             let t = Float(time)
-            if let hit = speakers.first(where: { $0.startTimeSeconds <= t && t <= $0.endTimeSeconds }) {
-                return names[hit.speakerId]
-            }
-            let nearest = speakers.min { abs(Float(time) - $0.startTimeSeconds) < abs(Float(time) - $1.startTimeSeconds) }
-            if let nearest, abs(t - nearest.startTimeSeconds) < 2 { return names[nearest.speakerId] }
-            return nil
+            func distance(_ s: TimedSpeakerSegment) -> Float { max(0, s.startTimeSeconds - t, t - s.endTimeSeconds) }
+            guard let nearest = speakers.min(by: { distance($0) < distance($1) }), distance(nearest) < 2 else { return nil }
+            return names[nearest.speakerId]
         }
 
         guard let tokens = result.tokenTimings, !tokens.isEmpty else {
@@ -123,10 +121,14 @@ actor SpeechEngine {
         var lastEnd = 0.0
         for token in tokens {
             let piece = token.token.replacingOccurrences(of: "\u{2581}", with: " ")
-            let who = speaker(at: (token.startTime + token.endTime) / 2)
             let gap = token.startTime - lastEnd
+            var who = speaker(at: (token.startTime + token.endTime) / 2)
+            let isPunctuation = piece.trimmingCharacters(in: .whitespaces).allSatisfy { $0.isPunctuation }
+            // Punctuation sticks to the line it closes; an unlabelled token right after
+            // a line keeps that line's speaker instead of starting an orphan.
+            if let line = current, isPunctuation || (who == nil && gap < 1.5) { who = line.speaker }
             let endsSentence = current.map { $0.text.count > 300 && $0.text.last.map { ".?!".contains($0) } == true } ?? false
-            if var line = current, line.speaker == who, gap < 1.2, !endsSentence {
+            if var line = current, line.speaker == who, gap < 1.2 || isPunctuation, !endsSentence {
                 line.text += piece
                 line.end = token.endTime
                 current = line
@@ -139,7 +141,7 @@ actor SpeechEngine {
         if let line = current { lines.append(line) }
         return lines.compactMap { line in
             let text = line.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !text.isEmpty else { return nil }
+            guard text.contains(where: { $0.isLetter || $0.isNumber }) else { return nil }
             return TranscriptLine(start: line.start, end: line.end, speaker: line.speaker, text: text)
         }
     }

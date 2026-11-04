@@ -110,7 +110,8 @@ final class CaptureSink: NSObject, SCStreamOutput, SCStreamDelegate {
               let format = sampleBuffer.formatDescription,
               let samples = floatSamples(from: sampleBuffer, format: format, type: type) else { return }
         if type == .microphone { onLevel?(Self.rms(samples)) }
-        mixer.add(samples, source: type == .microphone ? 0 : 1)
+        let hostSeconds = CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sampleBuffer))
+        mixer.add(samples, source: type == .microphone ? 0 : 1, at: hostSeconds)
         flush(final: false)
     }
 
@@ -183,17 +184,29 @@ final class CaptureSink: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 }
 
-/// Sums two sample streams by arrival order. Each source keeps its own write
-/// cursor into one shared buffer; drain hands out samples both have reached.
+/// Sums two sample streams, placing each buffer by its presentation timestamp so
+/// the mic and system audio stay aligned even though they start at different
+/// moments. Within a source, buffers continue contiguously unless the timestamp
+/// says a gap or drop happened (more than 50 ms off), in which case we re-anchor.
 final class Mixer {
+    private let rate = 16_000.0
     private let lock = NSLock()
     private var buffer: [Float] = []
-    private var base = 0
-    private var cursors = [0, 0]
+    private var base = 0                  // absolute sample index of buffer[0]
+    private var origin: Double?           // host time of absolute sample 0
+    private var cursors: [Int?] = [nil, nil]
+    private var reach = 0                 // highest absolute index written so far
 
-    func add(_ input: [Float], source: Int) {
+    func add(_ input: [Float], source: Int, at hostSeconds: Double) {
         lock.lock(); defer { lock.unlock() }
-        var start = cursors[source]
+        if origin == nil { origin = hostSeconds }
+        let fromClock = Int(((hostSeconds - origin!) * rate).rounded())
+        var start: Int
+        if let cursor = cursors[source], abs(fromClock - cursor) <= 800 {
+            start = cursor
+        } else {
+            start = max(0, fromClock)
+        }
         var samples = input[...]
         if start < base {
             samples = samples.dropFirst(min(base - start, samples.count))
@@ -207,11 +220,11 @@ final class Mixer {
             index += 1
         }
         cursors[source] = start + samples.count
+        reach = max(reach, start + samples.count)
     }
 
     func drain(lag: Int) -> [Float] {
         lock.lock(); defer { lock.unlock() }
-        let reach = cursors.max() ?? 0
         let available = min(buffer.count, reach - lag - base)
         guard available > 0 else { return [] }
         let out = Array(buffer[0..<available])

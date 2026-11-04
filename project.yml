@@ -47,10 +47,17 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: io.stackera.notes
         SWIFT_VERSION: "5.0"
         SWIFT_STRICT_CONCURRENCY: minimal
-        ENABLE_HARDENED_RUNTIME: YES
-        CODE_SIGN_IDENTITY: "-"
+        # Off: hardened-runtime library validation rejects our own dylibs when the
+        # signing certificate has no Team ID (self-signed local identity). Turn it
+        # on again only for a Developer ID + notarized build.
+        ENABLE_HARDENED_RUNTIME: NO
+        # Stable local identity so macOS keeps the system-audio permission across
+        # rebuilds (ad-hoc "-" changes on every build). Create it with
+        # scripts/make-dev-cert.sh, or set your Apple Development identity here.
+        CODE_SIGN_IDENTITY: "Meeting Notes Dev"
         CODE_SIGN_STYLE: Manual
         DEVELOPMENT_TEAM: ""
+        OTHER_CODE_SIGN_FLAGS: "--timestamp=none"
         MACOSX_DEPLOYMENT_TARGET: "15.0"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_PREVIEWS: YES
