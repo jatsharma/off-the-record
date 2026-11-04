@@ -1,4 +1,5 @@
 import Foundation
+import AVFoundation
 import GRDB
 
 /// Orchestrates record -> transcribe -> summarize, and owns deletes.
@@ -38,6 +39,27 @@ final class MeetingStore: ObservableObject {
 
     func discardRecording(_ meeting: Meeting) {
         delete(meeting)
+    }
+
+    /// Copies an existing audio file in as a new meeting and runs the pipeline.
+    @discardableResult
+    func importAudio(from source: URL, title: String? = nil) throws -> Meeting {
+        let id = UUID().uuidString
+        let destination = AppDatabase.audioDirectory.appendingPathComponent("\(id).wav")
+        try FileManager.default.copyItem(at: source, to: destination)
+        let duration = (try? AVAudioFile(forReading: destination)).map { Double($0.length) / $0.processingFormat.sampleRate } ?? 0
+        let meeting = Meeting(
+            id: id,
+            title: title ?? source.deletingPathExtension().lastPathComponent,
+            createdAt: Date(),
+            durationSeconds: duration,
+            audioPath: "\(id).wav",
+            summary: nil,
+            status: .transcribing,
+            errorMessage: nil)
+        try db.pool.write { try meeting.insert($0) }
+        Task { await process(meetingId: id) }
+        return meeting
     }
 
     // MARK: Pipeline

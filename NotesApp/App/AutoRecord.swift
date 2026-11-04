@@ -10,8 +10,23 @@ enum AutoRecord {
         return TimeInterval(args[i + 1])
     }
 
+    /// `NotesApp --import /path/to/file.wav` imports a file and runs the pipeline.
+    static var importPath: String? {
+        let args = CommandLine.arguments
+        guard let i = args.firstIndex(of: "--import"), i + 1 < args.count else { return nil }
+        return args[i + 1]
+    }
+
     @MainActor
     static func run(recorder: AudioRecorder, store: MeetingStore, select: @escaping (String) -> Void) async {
+        if let path = importPath {
+            do {
+                let meeting = try store.importAudio(from: URL(fileURLWithPath: path))
+                select(meeting.id)
+            } catch {
+                NSLog("Import failed: \(error.localizedDescription)")
+            }
+        }
         guard let seconds = requestedSeconds else { return }
         do {
             try await Task.sleep(for: .seconds(1))
