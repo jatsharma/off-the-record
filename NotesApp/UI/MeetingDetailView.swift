@@ -10,6 +10,7 @@ struct MeetingDetailView: View {
     @State private var tab: Tab = CommandLine.arguments.contains("--show-transcript") ? .transcript : .notes
     @State private var draftTitle = ""
     @State private var confirm: Confirm?
+    @State private var showPlayer = false
     @State private var renaming: String?? = nil   // .some(speaker) while the popover is open
     @State private var newSpeakerName = ""
 
@@ -25,7 +26,6 @@ struct MeetingDetailView: View {
         if let meeting = observer.meeting {
             VStack(spacing: 0) {
                 header(meeting)
-                Divider()
                 switch tab {
                 case .notes: notesTab(meeting)
                 case .transcript: transcriptTab(meeting)
@@ -35,9 +35,9 @@ struct MeetingDetailView: View {
             }
             .navigationTitle("")
             .toolbar { toolbarContent(meeting) }
-            .onAppear { draftTitle = meeting.title; player.load(meeting.audioURL) }
+            .onAppear { draftTitle = meeting.title }
             .onChange(of: meeting.title) { _, new in draftTitle = new }
-            .onChange(of: meeting.audioPath) { _, _ in player.load(meeting.audioURL) }
+            .onChange(of: meeting.audioPath) { _, _ in if meeting.audioPath == nil { showPlayer = false; player.stop() } }
             .onDisappear { player.stop() }
             .confirmationDialog(dialogTitle, isPresented: Binding(get: { confirm != nil }, set: { if !$0 { confirm = nil } }),
                                 titleVisibility: .visible) {
@@ -69,14 +69,13 @@ struct MeetingDetailView: View {
             PipelineStrip(meeting: meeting, progress: store.progress[meeting.id], hasTranscript: !observer.segments.isEmpty,
                           retryTranscribe: { store.retranscribe(meeting) },
                           retryNotes: { Task { await store.summarize(meetingId: meeting.id) } })
-            Picker("", selection: $tab) {
-                ForEach(Tab.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-            }
-            .pickerStyle(.segmented)
-            .frame(width: 240)
-            .padding(.top, 4)
+            UnderlineTabs(items: [
+                .init(value: Tab.notes, title: "Notes", detail: nil),
+                .init(value: Tab.transcript, title: "Transcript", detail: observer.segments.isEmpty ? nil : "\(observer.segments.count)"),
+            ], selection: $tab)
+            .padding(.top, 10)
         }
-        .padding(.horizontal, 28).padding(.top, 20).padding(.bottom, 12)
+        .padding(.horizontal, 28).padding(.top, 20)
     }
 
     // MARK: Notes
@@ -107,8 +106,9 @@ struct MeetingDetailView: View {
 
     private func transcriptTab(_ meeting: Meeting) -> some View {
         VStack(spacing: 0) {
-            if meeting.audioURL != nil {
+            if showPlayer, meeting.audioURL != nil {
                 PlayerBar(player: player)
+                    .task { await player.load(meeting.audioURL) }
                 Divider()
             }
             if observer.segments.isEmpty {
@@ -123,7 +123,7 @@ struct MeetingDetailView: View {
                                               isCurrent: player.isPlaying && player.currentTime >= segment.startTime && player.currentTime < segment.endTime,
                                               color: SpeakerPalette.color(for: segment.speaker, in: observer.segments),
                                               canPlay: meeting.audioURL != nil,
-                                              onSeek: { player.play(from: segment.startTime) },
+                                              onSeek: { listen(meeting, from: segment.startTime) },
                                               onRename: { renaming = .some(segment.speaker); newSpeakerName = segment.speaker ?? "" })
                                 .id(segment.id)
                             }
@@ -147,6 +147,15 @@ struct MeetingDetailView: View {
                 HStack { Spacer(); Button("Cancel") { renaming = nil }; Button("Rename") { applyRename(meeting) }.buttonStyle(.borderedProminent) }
             }
             .padding(16)
+        }
+    }
+
+    /// Shows the player (loading the file if needed) and starts from a point in the meeting.
+    private func listen(_ meeting: Meeting, from time: Double? = nil) {
+        showPlayer = true
+        Task {
+            await player.load(meeting.audioURL)
+            if let time { player.play(from: time) }
         }
     }
 
@@ -183,6 +192,12 @@ struct MeetingDetailView: View {
     @ToolbarContentBuilder
     private func toolbarContent(_ meeting: Meeting) -> some ToolbarContent {
         ToolbarItemGroup {
+            Button {
+                if showPlayer { showPlayer = false; player.stop() } else { listen(meeting) }
+            } label: { Label(showPlayer ? "Hide player" : "Listen", systemImage: showPlayer ? "headphones.slash" : "headphones") }
+            .help(showPlayer ? "Hide the audio player" : "Play the recording")
+            .disabled(meeting.audioPath == nil)
+
             Button {
                 Task { await store.summarize(meetingId: meeting.id) }
             } label: { Label("Regenerate notes", systemImage: "arrow.clockwise") }
@@ -286,11 +301,16 @@ struct PlayerBar: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Button { player.toggle() } label: {
-                Image(systemName: player.isPlaying ? "pause.fill" : "play.fill").font(.title3).frame(width: 24)
+            if player.isLoading {
+                ProgressView().controlSize(.small).frame(width: 24)
+            } else {
+                Button { player.toggle() } label: {
+                    Image(systemName: player.isPlaying ? "pause.fill" : "play.fill").font(.title3).frame(width: 24)
+                }
+                .buttonStyle(.plain)
+                .keyboardShortcut(.space, modifiers: [])
+                .disabled(!player.isLoaded)
             }
-            .buttonStyle(.plain)
-            .keyboardShortcut(.space, modifiers: [])
             Text(Summarizer.clock(player.currentTime)).font(.caption.monospacedDigit()).frame(width: 44, alignment: .trailing)
             Slider(value: Binding(get: { player.currentTime }, set: { player.seek(to: $0) }), in: 0...max(1, player.duration))
             Text(Summarizer.clock(player.duration)).font(.caption.monospacedDigit()).frame(width: 44, alignment: .leading)
@@ -332,7 +352,7 @@ struct TranscriptRow: View {
             Spacer(minLength: 0)
         }
         .padding(.vertical, 6).padding(.horizontal, 8)
-        .background(isCurrent ? Color.accentColor.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 6))
+        .background(isCurrent ? AnyShapeStyle(.tint.opacity(0.14)) : AnyShapeStyle(.clear), in: RoundedRectangle(cornerRadius: 6))
     }
 }
 

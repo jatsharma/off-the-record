@@ -19,11 +19,13 @@ struct NotesApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
-                .environmentObject(recorder)
-                .environmentObject(store)
-                .environmentObject(recording)
-                .frame(minWidth: 960, minHeight: 640)
+            Themed {
+                ContentView()
+                    .environmentObject(recorder)
+                    .environmentObject(store)
+                    .environmentObject(recording)
+                    .frame(minWidth: 960, minHeight: 640)
+            }
         }
         .commands {
             CommandGroup(after: .newItem) {
@@ -51,7 +53,7 @@ struct NotesApp: App {
         }
 
         Settings {
-            SettingsView()
+            Themed { SettingsView() }
         }
     }
 }

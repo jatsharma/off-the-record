@@ -8,19 +8,32 @@ final class AudioPlayer: ObservableObject {
     @Published var currentTime: Double = 0
     @Published private(set) var duration: Double = 0
     @Published private(set) var loadedURL: URL?
+    @Published private(set) var isLoading = false
 
     private var player: AVAudioPlayer?
     private var timer: Timer?
 
-    func load(_ url: URL?) {
+    /// Decodes the file off the main thread; a 30-minute WAV takes a second or two.
+    func load(_ url: URL?) async {
         guard url != loadedURL else { return }
         stop()
         loadedURL = url
-        guard let url, let p = try? AVAudioPlayer(contentsOf: url) else { player = nil; duration = 0; return }
-        p.prepareToPlay()
-        player = p
-        duration = p.duration
+        player = nil
+        duration = 0
+        guard let url else { return }
+        isLoading = true
+        let loaded: AVAudioPlayer? = await Task.detached(priority: .userInitiated) {
+            let p = try? AVAudioPlayer(contentsOf: url)
+            p?.prepareToPlay()
+            return p
+        }.value
+        isLoading = false
+        guard loadedURL == url else { return }   // a different file was requested meanwhile
+        player = loaded
+        duration = loaded?.duration ?? 0
     }
+
+    var isLoaded: Bool { player != nil }
 
     func toggle() { isPlaying ? pause() : play() }
 

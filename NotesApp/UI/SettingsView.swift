@@ -19,8 +19,31 @@ struct GeneralSettings: View {
     @AppStorage(AppSettings.urlKey) private var url = AppSettings.defaultURL
     @AppStorage(AppSettings.contextKey) private var contextTokens = AppSettings.defaultContextTokens
 
+    @AppStorage(AppSettings.accentKey) private var accent = AccentTheme.ocean.rawValue
+    @AppStorage(AppSettings.appearanceKey) private var appearance = Appearance.system.rawValue
+
     var body: some View {
         Form {
+            Section("Appearance") {
+                Picker("Theme", selection: $appearance) {
+                    ForEach(Appearance.allCases) { Text($0.name).tag($0.rawValue) }
+                }
+                .pickerStyle(.segmented)
+                LabeledContent("Accent") {
+                    HStack(spacing: 10) {
+                        ForEach(AccentTheme.allCases) { theme in
+                            Button { accent = theme.rawValue } label: {
+                                Circle().fill(theme.color).frame(width: 22, height: 22)
+                                    .overlay(Circle().stroke(.primary.opacity(accent == theme.rawValue ? 0.9 : 0), lineWidth: 2))
+                                    .overlay(Image(systemName: "checkmark").font(.caption2.bold()).foregroundStyle(.white).opacity(accent == theme.rawValue ? 1 : 0))
+                            }
+                            .buttonStyle(.plain)
+                            .help(theme.name)
+                        }
+                    }
+                }
+                Text("Recording controls stay red in every accent.").font(.caption).foregroundStyle(.secondary)
+            }
             Section("Speech recognition") {
                 Picker("Engine", selection: $engine) {
                     ForEach(ASREngine.allCases) { Text($0.label).tag($0.rawValue) }

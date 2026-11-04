@@ -76,12 +76,12 @@ struct RecordButton: View {
         Button(action: action) {
             ZStack {
                 Circle()
-                    .fill(isRecording ? Color.red.opacity(0.15) : Color.accentColor.opacity(0.12))
+                    .fill(isRecording ? AnyShapeStyle(AccentTheme.recording.opacity(0.15)) : AnyShapeStyle(.tint.opacity(0.14)))
                     .frame(width: 112, height: 112)
                     .scaleEffect(isRecording && pulse ? 1.08 : 1)
                     .animation(isRecording ? .easeInOut(duration: 1).repeatForever(autoreverses: true) : .default, value: pulse)
                 Circle()
-                    .fill(isRecording ? Color.red : Color.accentColor)
+                    .fill(isRecording ? AnyShapeStyle(AccentTheme.recording) : AnyShapeStyle(.tint))
                     .frame(width: 84, height: 84)
                 if busy {
                     ProgressView().controlSize(.regular).tint(.white)
