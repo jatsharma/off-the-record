@@ -1,0 +1,56 @@
+name: NotesApp
+options:
+  bundleIdPrefix: io.stackera
+  deploymentTarget:
+    macOS: "15.0"
+  xcodeVersion: "26.2"
+  createIntermediateGroups: true
+packages:
+  FluidAudio:
+    path: Vendor/FluidAudio
+  GRDB:
+    url: https://github.com/groue/GRDB.swift
+    from: 7.12.0
+targets:
+  NotesApp:
+    type: application
+    platform: macOS
+    sources:
+      - path: NotesApp
+        excludes:
+          - "Resources/*.plist"
+          - "Resources/*.entitlements"
+    dependencies:
+      - package: FluidAudio
+        product: FluidAudio
+      - package: GRDB
+        product: GRDB
+    info:
+      path: NotesApp/Resources/Info.plist
+      properties:
+        CFBundleName: Meeting Notes
+        CFBundleDisplayName: Meeting Notes
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        LSMinimumSystemVersion: "15.0"
+        LSApplicationCategoryType: public.app-category.productivity
+        NSMicrophoneUsageDescription: Notes records your side of the meeting. Audio never leaves this Mac.
+        NSAudioCaptureUsageDescription: Notes records the other side of your call from system audio. Audio never leaves this Mac.
+        NSHumanReadableCopyright: Local only.
+    entitlements:
+      path: NotesApp/Resources/NotesApp.entitlements
+      properties:
+        com.apple.security.device.audio-input: true
+        com.apple.security.app-sandbox: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.stackera.notes
+        SWIFT_VERSION: "5.0"
+        SWIFT_STRICT_CONCURRENCY: minimal
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGN_STYLE: Manual
+        DEVELOPMENT_TEAM: ""
+        MACOSX_DEPLOYMENT_TARGET: "15.0"
+        GENERATE_INFOPLIST_FILE: NO
+        ENABLE_PREVIEWS: YES

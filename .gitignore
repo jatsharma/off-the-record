@@ -1,0 +1,6 @@
+build/
+NotesApp.xcodeproj/
+*.xcuserstate
+xcuserdata/
+.DS_Store
+Vendor/
