@@ -4,22 +4,52 @@ import UniformTypeIdentifiers
 
 @main
 struct NotesApp: App {
-    @StateObject private var recorder = AudioRecorder()
-    @StateObject private var store = MeetingStore.shared
+    @StateObject private var recorder: AudioRecorder
+    @StateObject private var store: MeetingStore
+    @StateObject private var recording: RecordingController
+
+    init() {
+        let recorder = AudioRecorder()
+        let store = MeetingStore.shared
+        _recorder = StateObject(wrappedValue: recorder)
+        _store = StateObject(wrappedValue: store)
+        _recording = StateObject(wrappedValue: RecordingController(recorder: recorder, store: store))
+        Notifier.requestPermission()
+    }
 
     var body: some Scene {
         WindowGroup {
             ContentView()
                 .environmentObject(recorder)
                 .environmentObject(store)
-                .frame(minWidth: 900, minHeight: 600)
+                .environmentObject(recording)
+                .frame(minWidth: 960, minHeight: 640)
         }
         .commands {
             CommandGroup(after: .newItem) {
                 Button("Import Audio…") { ImportAudio.present(store: store) }
                     .keyboardShortcut("i", modifiers: [.command, .shift])
             }
+            CommandMenu("Recording") {
+                Button(recording.isRecording ? "Stop Recording" : "Start Recording") { recording.toggle() }
+                    .keyboardShortcut("r", modifiers: [.command])
+            }
         }
+
+        MenuBarExtra {
+            if recording.isRecording {
+                Text("Recording · \(Summarizer.clock(recorder.elapsed))")
+                Button("Stop Recording") { recording.toggle() }
+            } else {
+                Button("Start Recording") { recording.toggle() }
+            }
+            Divider()
+            Button("Open Meeting Notes") { NSApp.activate(ignoringOtherApps: true) }
+        } label: {
+            Image(systemName: recording.isRecording ? "record.circle.fill" : "waveform.circle")
+                .symbolRenderingMode(recording.isRecording ? .multicolor : .monochrome)
+        }
+
         Settings {
             SettingsView()
         }

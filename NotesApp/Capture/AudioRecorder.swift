@@ -20,7 +20,8 @@ enum RecorderError: LocalizedError {
 final class AudioRecorder: ObservableObject {
     @Published private(set) var isRecording = false
     @Published private(set) var elapsed: TimeInterval = 0
-    @Published private(set) var level: Float = 0
+    @Published private(set) var level: Float = 0          // microphone
+    @Published private(set) var systemLevel: Float = 0    // the other side of the call
 
     private var stream: SCStream?
     private var sink: CaptureSink?
@@ -47,6 +48,9 @@ final class AudioRecorder: ObservableObject {
         let sink = try CaptureSink(url: url)
         sink.onLevel = { [weak self] value in
             Task { @MainActor in self?.level = value }
+        }
+        sink.onSystemLevel = { [weak self] value in
+            Task { @MainActor in self?.systemLevel = value }
         }
         let stream = SCStream(filter: filter, configuration: config, delegate: sink)
         try stream.addStreamOutput(sink, type: .audio, sampleHandlerQueue: sink.queue)
@@ -77,6 +81,7 @@ final class AudioRecorder: ObservableObject {
         self.sink = nil
         isRecording = false
         level = 0
+        systemLevel = 0
         return duration
     }
 }
@@ -85,6 +90,7 @@ final class AudioRecorder: ObservableObject {
 final class CaptureSink: NSObject, SCStreamOutput, SCStreamDelegate {
     let queue = DispatchQueue(label: "io.stackera.notes.capture")
     var onLevel: ((Float) -> Void)?
+    var onSystemLevel: ((Float) -> Void)?
 
     private let file: AVAudioFile
     private let targetFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false)!
@@ -109,7 +115,7 @@ final class CaptureSink: NSObject, SCStreamOutput, SCStreamDelegate {
         guard type == .audio || type == .microphone, sampleBuffer.isValid,
               let format = sampleBuffer.formatDescription,
               let samples = floatSamples(from: sampleBuffer, format: format, type: type) else { return }
-        if type == .microphone { onLevel?(Self.rms(samples)) }
+        if type == .microphone { onLevel?(Self.rms(samples)) } else { onSystemLevel?(Self.rms(samples)) }
         let hostSeconds = CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sampleBuffer))
         mixer.add(samples, source: type == .microphone ? 0 : 1, at: hostSeconds)
         flush(final: false)

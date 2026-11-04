@@ -1,90 +1,151 @@
 import SwiftUI
 
 struct RecordView: View {
-    var onFinished: (String) -> Void
-
     @EnvironmentObject private var recorder: AudioRecorder
-    @EnvironmentObject private var store: MeetingStore
-    @State private var title = ""
-    @State private var current: Meeting?
-    @State private var error: String?
-    @State private var busy = false
+    @EnvironmentObject private var recording: RecordingController
+    @State private var micState = Permissions.microphone
+    @State private var systemState = Permissions.systemAudio
 
     var body: some View {
-        VStack(spacing: 24) {
-            Spacer()
-            TextField("Meeting title (optional)", text: $title)
-                .textFieldStyle(.roundedBorder)
-                .frame(maxWidth: 420)
-                .disabled(recorder.isRecording)
+        VStack(spacing: 0) {
+            Spacer(minLength: 24)
+            VStack(spacing: 28) {
+                // Timer + big button
+                VStack(spacing: 18) {
+                    Text(Summarizer.clock(recorder.elapsed))
+                        .font(.system(size: 64, weight: .thin, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(recorder.isRecording ? .primary : .tertiary)
+                        .contentTransition(.numericText())
+                    RecordButton(isRecording: recorder.isRecording, busy: recording.busy) { recording.toggle() }
+                    Text(recorder.isRecording ? "Recording. Press to stop." : "Press to start · ⌘R")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
 
-            Text(Summarizer.clock(recorder.elapsed))
-                .font(.system(size: 56, weight: .light, design: .rounded))
-                .monospacedDigit()
-                .foregroundStyle(recorder.isRecording ? .primary : .tertiary)
+                // Title
+                TextField("Meeting title (optional, named automatically if left blank)", text: $recording.title)
+                    .textFieldStyle(.roundedBorder)
+                    .controlSize(.large)
+                    .frame(maxWidth: 460)
+                    .disabled(recorder.isRecording)
 
-            LevelBar(level: recorder.level)
-                .frame(maxWidth: 420)
-                .opacity(recorder.isRecording ? 1 : 0.3)
-
-            Button(action: toggle) {
-                Label(recorder.isRecording ? "Stop" : "Start recording",
-                      systemImage: recorder.isRecording ? "stop.circle.fill" : "record.circle")
-                    .font(.title3)
-                    .frame(minWidth: 200)
-            }
-            .controlSize(.large)
-            .buttonStyle(.borderedProminent)
-            .tint(recorder.isRecording ? .red : .accentColor)
-            .disabled(busy)
-            .keyboardShortcut(.space, modifiers: [])
-
-            Text(recorder.isRecording
-                 ? "Recording your microphone and system audio. Everything stays on this Mac."
-                 : "Records the mic and the other side of the call. First use asks for microphone and system-audio permission.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
+                // Levels
+                VStack(spacing: 10) {
+                    MeterRow(label: "You", icon: "mic.fill", level: recorder.level, active: recorder.isRecording)
+                    MeterRow(label: "Call", icon: "speaker.wave.2.fill", level: recorder.systemLevel, active: recorder.isRecording)
+                }
                 .frame(maxWidth: 460)
 
-            if let error {
-                Text(error).font(.callout).foregroundStyle(.red).multilineTextAlignment(.center).frame(maxWidth: 460)
+                // Permissions
+                HStack(spacing: 10) {
+                    PermissionChip(name: "Microphone", state: micState) { Permissions.openMicrophoneSettings() }
+                    PermissionChip(name: "System audio", state: systemState) { Permissions.openSystemAudioSettings() }
+                }
+                .onReceive(Timer.publish(every: 2, on: .main, in: .common).autoconnect()) { _ in
+                    micState = Permissions.microphone
+                    systemState = Permissions.systemAudio
+                }
+
+                if let error = recording.error {
+                    Label(error, systemImage: "exclamationmark.triangle.fill")
+                        .font(.callout)
+                        .foregroundStyle(.orange)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 460)
+                }
             }
             Spacer()
+            Label("Audio, transcript and notes stay on this Mac. Nothing is uploaded.", systemImage: "lock.fill")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .padding(.bottom, 16)
         }
-        .padding()
+        .padding(.horizontal, 32)
+        .navigationTitle("New recording")
     }
+}
 
-    private func toggle() {
-        busy = true
-        error = nil
-        Task {
-            defer { busy = false }
-            do {
-                if recorder.isRecording {
-                    let duration = try await recorder.stop()
-                    if let meeting = current {
-                        if duration < 2 {
-                            store.discardRecording(meeting)
-                        } else {
-                            store.finishRecording(meeting, duration: duration)
-                            onFinished(meeting.id)
-                        }
-                    }
-                    current = nil
-                    title = ""
+struct RecordButton: View {
+    let isRecording: Bool
+    let busy: Bool
+    let action: () -> Void
+    @State private var pulse = false
+
+    var body: some View {
+        Button(action: action) {
+            ZStack {
+                Circle()
+                    .fill(isRecording ? Color.red.opacity(0.15) : Color.accentColor.opacity(0.12))
+                    .frame(width: 112, height: 112)
+                    .scaleEffect(isRecording && pulse ? 1.08 : 1)
+                    .animation(isRecording ? .easeInOut(duration: 1).repeatForever(autoreverses: true) : .default, value: pulse)
+                Circle()
+                    .fill(isRecording ? Color.red : Color.accentColor)
+                    .frame(width: 84, height: 84)
+                if busy {
+                    ProgressView().controlSize(.regular).tint(.white)
                 } else {
-                    let meeting = try store.createMeeting(title: title)
-                    current = meeting
-                    try await recorder.start(to: meeting.audioURL!)
-                }
-            } catch {
-                self.error = error.localizedDescription
-                if let meeting = current, !recorder.isRecording {
-                    store.discardRecording(meeting)
-                    current = nil
+                    Image(systemName: isRecording ? "stop.fill" : "mic.fill")
+                        .font(.system(size: 34, weight: .semibold))
+                        .foregroundStyle(.white)
                 }
             }
+        }
+        .buttonStyle(.plain)
+        .disabled(busy)
+        .onAppear { pulse = true }
+        .accessibilityLabel(isRecording ? "Stop recording" : "Start recording")
+    }
+}
+
+struct MeterRow: View {
+    let label: String
+    let icon: String
+    let level: Float
+    let active: Bool
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Label(label, systemImage: icon)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
+                .frame(width: 64, alignment: .leading)
+            LevelBar(level: active ? level : 0)
+        }
+        .opacity(active ? 1 : 0.5)
+    }
+}
+
+struct PermissionChip: View {
+    let name: String
+    let state: Permissions.State
+    let open: () -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon).foregroundStyle(color)
+            Text(name).font(.caption)
+            if state != .granted {
+                Button("Open Settings", action: open).buttonStyle(.link).font(.caption)
+            }
+        }
+        .padding(.horizontal, 10).padding(.vertical, 6)
+        .background(.quaternary.opacity(0.5), in: Capsule())
+        .help(help)
+    }
+
+    private var icon: String {
+        switch state { case .granted: return "checkmark.circle.fill"; case .denied: return "xmark.circle.fill"; case .unknown: return "questionmark.circle" }
+    }
+    private var color: Color {
+        switch state { case .granted: return .green; case .denied: return .red; case .unknown: return .secondary }
+    }
+    private var help: String {
+        switch state {
+        case .granted: return "\(name) access granted"
+        case .denied: return "\(name) access was denied. Enable it in System Settings, then relaunch."
+        case .unknown: return "macOS asks for \(name) access when you start the first recording."
         }
     }
 }
@@ -95,10 +156,11 @@ struct LevelBar: View {
         GeometryReader { geo in
             ZStack(alignment: .leading) {
                 Capsule().fill(.quaternary)
-                Capsule().fill(.green).frame(width: geo.size.width * CGFloat(min(1, level)))
+                Capsule().fill(level > 0.85 ? Color.orange : Color.green)
+                    .frame(width: geo.size.width * CGFloat(min(1, level)))
             }
         }
-        .frame(height: 6)
+        .frame(height: 8)
         .animation(.linear(duration: 0.1), value: level)
     }
 }

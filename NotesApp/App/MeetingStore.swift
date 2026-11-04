@@ -21,7 +21,7 @@ final class MeetingStore: ObservableObject {
         let cleanTitle = title.trimmingCharacters(in: .whitespaces)
         let meeting = Meeting(
             id: id,
-            title: cleanTitle.isEmpty ? Date().formatted(date: .abbreviated, time: .shortened) : cleanTitle,
+            title: cleanTitle.isEmpty ? Self.autoTitle("Meeting") : cleanTitle,
             createdAt: Date(),
             durationSeconds: 0,
             audioPath: "\(id).wav",
@@ -48,9 +48,11 @@ final class MeetingStore: ObservableObject {
         let destination = AppDatabase.audioDirectory.appendingPathComponent("\(id).wav")
         try FileManager.default.copyItem(at: source, to: destination)
         let duration = (try? AVAudioFile(forReading: destination)).map { Double($0.length) / $0.processingFormat.sampleRate } ?? 0
+        let fileName = source.deletingPathExtension().lastPathComponent
+        let looksLikeId = fileName.range(of: #"^[0-9A-Fa-f-]{20,}$"#, options: .regularExpression) != nil
         let meeting = Meeting(
             id: id,
-            title: title ?? source.deletingPathExtension().lastPathComponent,
+            title: title ?? (looksLikeId ? Self.autoTitle("Imported") : fileName),
             createdAt: Date(),
             durationSeconds: duration,
             audioPath: "\(id).wav",
@@ -107,7 +109,14 @@ final class MeetingStore: ObservableObject {
             let final = text.trimmingCharacters(in: .whitespacesAndNewlines)
             update(meetingId) { $0.summary = final; $0.status = .done }
             liveSummary[meetingId] = nil
+            if Self.isAutoTitle(meeting.title) {
+                progress[meetingId] = "Naming the meeting"
+                if let title = try? await suggestTitle(notes: final, client: client, model: model) {
+                    update(meetingId) { $0.title = title }
+                }
+            }
             progress[meetingId] = nil
+            Notifier.post(title: "Notes ready", body: fetch(meetingId)?.title ?? meeting.title)
         } catch {
             liveSummary[meetingId] = nil
             fail(meetingId, error)
@@ -116,6 +125,46 @@ final class MeetingStore: ObservableObject {
 
     func retranscribe(_ meeting: Meeting) {
         Task { await process(meetingId: meeting.id) }
+    }
+
+    // MARK: Titles
+
+    static func autoTitle(_ kind: String) -> String {
+        "\(kind) · \(Date().formatted(.dateTime.day().month(.abbreviated).hour().minute()))"
+    }
+
+    static func isAutoTitle(_ title: String) -> Bool {
+        title.hasPrefix("Meeting · ") || title.hasPrefix("Imported · ") || title.hasPrefix("Auto test")
+            || title.range(of: #"^[0-9A-Fa-f-]{20,}$"#, options: .regularExpression) != nil
+    }
+
+    private func suggestTitle(notes: String, client: OllamaClient, model: String) async throws -> String? {
+        let prompt = "Give this meeting a title of three to seven words that says what it was about. Output only the title, no quotes, no punctuation at the end.\n\n\(notes.prefix(3000))"
+        var text = ""
+        for try await token in client.chat(model: model, system: "You name meetings.", user: prompt, contextTokens: 4096) { text += token }
+        let title = text.components(separatedBy: .newlines).first?.trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters)) ?? ""
+        return (3...80).contains(title.count) ? title : nil
+    }
+
+    // MARK: Speakers and export
+
+    func renameSpeaker(_ old: String?, to new: String, in meetingId: String) {
+        let clean = new.trimmingCharacters(in: .whitespaces)
+        guard !clean.isEmpty else { return }
+        try? db.pool.write { db in
+            if let old {
+                try db.execute(sql: "update segment set speaker = ? where meetingId = ? and speaker = ?", arguments: [clean, meetingId, old])
+            } else {
+                try db.execute(sql: "update segment set speaker = ? where meetingId = ? and speaker is null", arguments: [clean, meetingId])
+            }
+        }
+    }
+
+    func markdown(for meeting: Meeting, segments: [Segment]) -> String {
+        var out = "# \(meeting.title)\n\n\(meeting.createdAt.formatted(date: .long, time: .shortened)) · \(Summarizer.clock(meeting.durationSeconds))\n\n"
+        if let summary = meeting.summary, !summary.isEmpty { out += summary + "\n\n" }
+        if !segments.isEmpty { out += "## Transcript\n\n" + Summarizer.transcriptText(segments) + "\n" }
+        return out
     }
 
     // MARK: Deletes
@@ -185,5 +234,6 @@ final class MeetingStore: ObservableObject {
     private func fail(_ id: String, _ error: Error) {
         update(id) { $0.status = .failed; $0.errorMessage = error.localizedDescription }
         progress[id] = nil
+        Notifier.post(title: "Processing failed", body: error.localizedDescription)
     }
 }

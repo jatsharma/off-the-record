@@ -51,6 +51,16 @@ actor SpeechEngine {
     private var whisperModelName: String?
     private var qwen3: Qwen3AsrManager?
 
+    /// Drops loaded models so the next use re-downloads and re-loads them (after a delete in Settings).
+    func unload(_ engine: ASREngine?) {
+        switch engine {
+        case .parakeet: asr = nil
+        case .whisper: whisper = nil; whisperModelName = nil
+        case .qwen3: qwen3 = nil
+        case nil: asr = nil; whisper = nil; whisperModelName = nil; qwen3 = nil; diarizer = nil
+        }
+    }
+
     func prepare(engine: ASREngine, status: @escaping @Sendable (String) -> Void) async throws {
         if engine == .qwen3 {
             if qwen3 == nil {
@@ -64,7 +74,8 @@ actor SpeechEngine {
             let name = AppSettings.whisperModel
             if whisper == nil || whisperModelName != name {
                 status("Loading Whisper (\(name), about 1 GB on first run)")
-                whisper = try await WhisperKit(WhisperKitConfig(model: name, verbose: false, logLevel: .error))
+                try? FileManager.default.createDirectory(at: ModelCatalog.whisperRoot, withIntermediateDirectories: true)
+                whisper = try await WhisperKit(WhisperKitConfig(model: name, downloadBase: ModelCatalog.whisperRoot, verbose: false, logLevel: .error))
                 whisperModelName = name
             }
         } else if asr == nil {
