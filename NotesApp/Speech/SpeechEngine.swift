@@ -4,14 +4,16 @@ import FluidAudio
 import WhisperKit
 
 enum ASREngine: String, CaseIterable, Identifiable {
-    case parakeet, whisper
+    case parakeet, whisper, qwen3
     var id: String { rawValue }
     var label: String {
         switch self {
         case .parakeet: return "Parakeet v3 (fast, English + European)"
         case .whisper: return "Whisper large-v3-turbo (slower, 99 languages incl. Hindi)"
+        case .qwen3: return "Qwen3-ASR 0.6B (30 languages incl. Hindi, experimental)"
         }
     }
+    var takesLanguageHint: Bool { self != .parakeet }
 }
 
 /// One timed unit of recognized text: a Parakeet token or a Whisper word.
@@ -47,9 +49,18 @@ actor SpeechEngine {
     private var diarizer: DiarizerManager?
     private var whisper: WhisperKit?
     private var whisperModelName: String?
+    private var qwen3: Qwen3AsrManager?
 
     func prepare(engine: ASREngine, status: @escaping @Sendable (String) -> Void) async throws {
-        if engine == .whisper {
+        if engine == .qwen3 {
+            if qwen3 == nil {
+                status("Loading Qwen3-ASR 0.6B (about 1.2 GB on first run)")
+                let directory = try await Qwen3AsrModels.download(variant: .f32)
+                let manager = Qwen3AsrManager()
+                try await manager.loadModels(from: directory)
+                qwen3 = manager
+            }
+        } else if engine == .whisper {
             let name = AppSettings.whisperModel
             if whisper == nil || whisperModelName != name {
                 status("Loading Whisper (\(name), about 1 GB on first run)")
@@ -81,9 +92,15 @@ actor SpeechEngine {
         let samples = try Self.loadSamples(file)
         let duration = Double(samples.count) / 16_000
 
+        if engine == .qwen3 {
+            return try await transcribeByTurns(samples: samples, duration: duration, status: status)
+        }
+
         let pieces: [TimedPiece]
         let fullText: String
         switch engine {
+        case .qwen3:
+            throw SpeechError.notLoaded   // handled above
         case .parakeet:
             guard let asr else { throw SpeechError.notLoaded }
             status("Transcribing with Parakeet")
@@ -128,6 +145,61 @@ actor SpeechEngine {
             speakers = []
         }
         return Self.merge(pieces: pieces, fullText: fullText, speakers: speakers, duration: duration)
+    }
+
+    // MARK: - Turn-by-turn transcription (engines without timestamps, 30 s max input)
+
+    /// Diarize first, then transcribe each speaker turn (capped at 25 s) on its own.
+    /// Timing and speaker come from the diarizer; the recognizer only has to produce text.
+    private func transcribeByTurns(samples: [Float], duration: Double,
+                                   status: @escaping @Sendable (String) -> Void) async throws -> [TranscriptLine] {
+        guard let diarizer, let qwen3 else { throw SpeechError.notLoaded }
+        status("Identifying speakers")
+        let segments = (try? diarizer.performCompleteDiarization(samples, sampleRate: 16_000).segments) ?? []
+        var names: [String: String] = [:]
+        for seg in segments.sorted(by: { $0.startTimeSeconds < $1.startTimeSeconds }) where names[seg.speakerId] == nil {
+            names[seg.speakerId] = "Speaker \(names.count + 1)"
+        }
+
+        // Build chunks: consecutive same-speaker turns joined up to 25 s; silence gaps over 2 s
+        // that the diarizer did not label become unlabelled chunks so no speech is skipped.
+        struct Chunk { var start: Double; var end: Double; var speaker: String? }
+        let maxLen = 25.0
+        var chunks: [Chunk] = []
+        var cursor = 0.0
+        for seg in segments.sorted(by: { $0.startTimeSeconds < $1.startTimeSeconds }) {
+            let s = Double(seg.startTimeSeconds), e = Double(seg.endTimeSeconds), who = names[seg.speakerId]
+            if s - cursor > 2 { chunks.append(Chunk(start: cursor, end: s, speaker: nil)) }
+            if var last = chunks.last, last.speaker == who, s - last.end < 1, e - last.start <= maxLen {
+                last.end = e
+                chunks[chunks.count - 1] = last
+            } else {
+                chunks.append(Chunk(start: s, end: e, speaker: who))
+            }
+            cursor = max(cursor, e)
+        }
+        if duration - cursor > 2 { chunks.append(Chunk(start: cursor, end: duration, speaker: nil)) }
+        if chunks.isEmpty { chunks = [Chunk(start: 0, end: duration, speaker: nil)] }
+        // Split anything still longer than the model's window.
+        var pieces: [Chunk] = []
+        for c in chunks {
+            var s = c.start
+            while c.end - s > maxLen { pieces.append(Chunk(start: s, end: s + maxLen, speaker: c.speaker)); s += maxLen }
+            pieces.append(Chunk(start: s, end: c.end, speaker: c.speaker))
+        }
+
+        var lines: [TranscriptLine] = []
+        let language = AppSettings.language
+        for (i, c) in pieces.enumerated() where c.end - c.start >= 0.4 {
+            status("Transcribing with Qwen3 (\(i + 1)/\(pieces.count))")
+            let lo = max(0, Int((c.start - 0.2) * 16_000)), hi = min(samples.count, Int((c.end + 0.2) * 16_000))
+            guard hi > lo else { continue }
+            let text = (try? await qwen3.transcribe(audioSamples: Array(samples[lo..<hi]), language: language)) ?? ""
+            let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard clean.contains(where: { $0.isLetter || $0.isNumber }) else { continue }
+            lines.append(TranscriptLine(start: c.start, end: c.end, speaker: c.speaker, text: clean))
+        }
+        return lines
     }
 
     // MARK: - Audio loading

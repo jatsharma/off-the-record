@@ -9,10 +9,13 @@ FLUIDAUDIO_TAG = v0.18.2
 
 # Xcode 26 ignores SwiftPM package traits, so FluidAudio is vendored and its
 # traits manifest removed; plain Package.swift then enables the Diarizer.
+# scripts/fluidaudio-qwen3.patch restores the Qwen3-ASR backend upstream removed
+# in June 2026 (#676) and ports its downloader to the current ModelHub API.
 deps:           ## Vendor FluidAudio at $(FLUIDAUDIO_TAG)
 	@if [ ! -d Vendor/FluidAudio ]; then \
 	  git clone -q --depth 1 --branch $(FLUIDAUDIO_TAG) https://github.com/FluidInference/FluidAudio Vendor/FluidAudio; \
 	  rm -f Vendor/FluidAudio/Package@swift-6.2.swift Vendor/FluidAudio/Package@swift-6.1.swift; \
+	  git -C Vendor/FluidAudio apply ../../scripts/fluidaudio-qwen3.patch; \
 	fi
 
 gen: deps       ## Generate NotesApp.xcodeproj from project.yml

@@ -17,8 +17,10 @@ struct SettingsView: View {
                 }
                 if engine == ASREngine.whisper.rawValue {
                     TextField("Whisper model", text: $whisperModel, prompt: Text(AppSettings.defaultWhisperModel))
+                }
+                if ASREngine(rawValue: engine)?.takesLanguageHint == true {
                     TextField("Language code (blank = auto-detect)", text: $language, prompt: Text("auto"))
-                    Text("Models come from argmaxinc/whisperkit-coreml on Hugging Face. For Hindi-English meetings leave the language blank; Whisper writes Hindi in Devanagari and English in Latin script.")
+                    Text("Leave blank for mixed-language meetings. Whisper and Qwen3 write Hindi in Devanagari and English in Latin script. Qwen3 transcribes one speaker turn at a time, so its timings follow the diarizer.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
