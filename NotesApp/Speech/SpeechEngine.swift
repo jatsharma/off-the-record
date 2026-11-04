@@ -120,7 +120,8 @@ actor SpeechEngine {
 
         // Two-channel recording (left = you, right = the call): transcribe each side on its own.
         if channels.count == 2, engine == .parakeet, let asr {
-            let mic = Self.suppressEcho(mic: channels[0], system: channels[1])
+            let mic = Self.normalize(Self.suppressEcho(mic: channels[0], system: channels[1]))
+            let call = Self.normalize(channels[1])
             report(0, "Transcribing your side")
             await asr.setWindowHandler { p in report(0.45 * Double(p.index + 1) / Double(max(1, p.windowCount)), "Transcribing your side") }
             var state = try TdtDecoderState(decoderLayers: await asr.decoderLayerCount)
@@ -131,11 +132,11 @@ actor SpeechEngine {
             report(0.45, "Transcribing the call")
             await asr.setWindowHandler { p in report(0.45 + 0.45 * Double(p.index + 1) / Double(max(1, p.windowCount)), "Transcribing the call") }
             var state2 = try TdtDecoderState(decoderLayers: await asr.decoderLayerCount)
-            let theirs = try await asr.transcribe(channels[1], decoderState: &state2)
+            let theirs = try await asr.transcribe(call, decoderState: &state2)
             await asr.setWindowHandler(nil)
 
             report(0.92, "Identifying speakers")
-            let diar = (try? diarizer.performCompleteDiarization(channels[1], sampleRate: 16_000).segments) ?? []
+            let diar = (try? diarizer.performCompleteDiarization(call, sampleRate: 16_000).segments) ?? []
             let (names, vectors) = Self.nameSpeakers(diar, knownVoices: knownVoices, singleLabel: "Them")
             let theirLines = Self.merge(pieces: Self.pieces(from: theirs), fullText: theirs.text, speakers: diar,
                                         duration: duration, names: names)
@@ -147,8 +148,18 @@ actor SpeechEngine {
         let samples = channels.count == 1 ? channels[0] : Self.mixDown(channels)
 
         if engine == .qwen3 {
-            let lines = try await transcribeByTurns(samples: samples, duration: duration, status: status)
-            return TranscriptResult(lines: lines, speakerVectors: [:])
+            if channels.count == 2 {
+                let mic = Self.normalize(Self.suppressEcho(mic: channels[0], system: channels[1]))
+                let call = Self.normalize(channels[1])
+                let mine = try await transcribeByTurns(samples: mic, duration: duration, fixedSpeaker: "You",
+                                                       knownVoices: [], status: status)
+                let theirs = try await transcribeByTurns(samples: call, duration: duration, fixedSpeaker: nil,
+                                                         knownVoices: knownVoices, singleLabel: "Them", status: status)
+                let lines = (mine.lines + theirs.lines).sorted { $0.start < $1.start }
+                return TranscriptResult(lines: lines, speakerVectors: theirs.speakerVectors)
+            }
+            return try await transcribeByTurns(samples: samples, duration: duration, fixedSpeaker: nil,
+                                               knownVoices: knownVoices, singleLabel: nil, status: status)
         }
 
         let pieces: [TimedPiece]
@@ -200,7 +211,8 @@ actor SpeechEngine {
             speakers = []
         }
         let (names, vectors) = Self.nameSpeakers(speakers, knownVoices: knownVoices, singleLabel: nil)
-        let lines = Self.merge(pieces: pieces, fullText: fullText, speakers: speakers, duration: duration, names: names)
+        var lines = Self.merge(pieces: pieces, fullText: fullText, speakers: speakers, duration: duration, names: names)
+        if engine == .whisper { lines = lines.filter { Self.matchesExpectedScripts($0.text) } }
         return TranscriptResult(lines: lines, speakerVectors: vectors)
     }
 
@@ -290,14 +302,20 @@ actor SpeechEngine {
 
     /// Diarize first, then transcribe each speaker turn (capped at 25 s) on its own.
     /// Timing and speaker come from the diarizer; the recognizer only has to produce text.
-    private func transcribeByTurns(samples: [Float], duration: Double,
-                                   status: @escaping @Sendable (String) -> Void) async throws -> [TranscriptLine] {
+    private func transcribeByTurns(samples: [Float], duration: Double, fixedSpeaker: String?, knownVoices: [KnownVoice],
+                                   singleLabel: String? = nil,
+                                   status: @escaping @Sendable (String) -> Void) async throws -> TranscriptResult {
         guard let diarizer, let qwen3 else { throw SpeechError.notLoaded }
-        status("Identifying speakers")
-        let segments = (try? diarizer.performCompleteDiarization(samples, sampleRate: 16_000).segments) ?? []
+        var segments: [TimedSpeakerSegment] = []
         var names: [String: String] = [:]
-        for seg in segments.sorted(by: { $0.startTimeSeconds < $1.startTimeSeconds }) where names[seg.speakerId] == nil {
-            names[seg.speakerId] = "Speaker \(names.count + 1)"
+        var vectors: [String: [Float]] = [:]
+        var energyTurns: [(Double, Double)] = []
+        if fixedSpeaker == nil {
+            status("Identifying speakers")
+            segments = (try? diarizer.performCompleteDiarization(samples, sampleRate: 16_000).segments) ?? []
+            (names, vectors) = Self.nameSpeakers(segments, knownVoices: knownVoices, singleLabel: singleLabel)
+        } else {
+            energyTurns = Self.speechRuns(samples)
         }
 
         // Build chunks: consecutive same-speaker turns joined up to 25 s; silence gaps over 2 s
@@ -306,6 +324,16 @@ actor SpeechEngine {
         let maxLen = 25.0
         var chunks: [Chunk] = []
         var cursor = 0.0
+        if let fixedSpeaker {
+            for (s, e) in energyTurns {
+                if var last = chunks.last, s - last.end < 1, e - last.start <= maxLen {
+                    last.end = e; chunks[chunks.count - 1] = last
+                } else {
+                    chunks.append(Chunk(start: s, end: e, speaker: fixedSpeaker))
+                }
+            }
+            cursor = duration
+        }
         for seg in segments.sorted(by: { $0.startTimeSeconds < $1.startTimeSeconds }) {
             let s = Double(seg.startTimeSeconds), e = Double(seg.endTimeSeconds), who = names[seg.speakerId]
             if s - cursor > 2 { chunks.append(Chunk(start: cursor, end: s, speaker: nil)) }
@@ -317,8 +345,8 @@ actor SpeechEngine {
             }
             cursor = max(cursor, e)
         }
-        if duration - cursor > 2 { chunks.append(Chunk(start: cursor, end: duration, speaker: nil)) }
-        if chunks.isEmpty { chunks = [Chunk(start: 0, end: duration, speaker: nil)] }
+        if fixedSpeaker == nil, duration - cursor > 2 { chunks.append(Chunk(start: cursor, end: duration, speaker: nil)) }
+        if chunks.isEmpty, fixedSpeaker == nil { chunks = [Chunk(start: 0, end: duration, speaker: nil)] }
         // Split anything still longer than the model's window.
         var pieces: [Chunk] = []
         for c in chunks {
@@ -329,16 +357,132 @@ actor SpeechEngine {
 
         var lines: [TranscriptLine] = []
         let language = AppSettings.language
-        for (i, c) in pieces.enumerated() where c.end - c.start >= 0.4 {
+        for (i, c) in pieces.enumerated() where c.end - c.start >= 0.8 {
             status("Transcribing with Qwen3 (\(i + 1)/\(pieces.count))")
             let lo = max(0, Int((c.start - 0.2) * 16_000)), hi = min(samples.count, Int((c.end + 0.2) * 16_000))
             guard hi > lo else { continue }
-            let text = (try? await qwen3.transcribe(audioSamples: Array(samples[lo..<hi]), language: language)) ?? ""
+            let chunk = Array(samples[lo..<hi])
+            guard Self.voicedRatio(chunk) >= 0.25 else { continue }          // mostly silence: skip
+            let text = (try? await qwen3.transcribe(audioSamples: chunk, language: language)) ?? ""
             let clean = Self.collapseRepeats(text.trimmingCharacters(in: .whitespacesAndNewlines))
-            guard clean.contains(where: { $0.isLetter || $0.isNumber }) else { continue }
+            guard clean.contains(where: { $0.isLetter || $0.isNumber }), Self.matchesExpectedScripts(clean) else { continue }
             lines.append(TranscriptLine(start: c.start, end: c.end, speaker: c.speaker, text: clean))
         }
-        return lines
+        return TranscriptResult(lines: Self.dedupeOverlaps(lines), speakerVectors: vectors)
+    }
+
+    /// Rejects recognizer output written in a script the meeting is not expected to contain
+    /// (short, near-silent chunks make autoregressive models hallucinate Chinese, Korean, ...).
+    static func matchesExpectedScripts(_ text: String) -> Bool {
+        let allowed = AppSettings.expectedScripts
+        var ok = 0, bad = 0
+        for scalar in text.unicodeScalars where scalar.properties.isAlphabetic {
+            let v = scalar.value
+            let script: String
+            switch v {
+            case 0x0041...0x024F, 0x1E00...0x1EFF: script = "latin"
+            case 0x0900...0x097F: script = "devanagari"
+            case 0x0600...0x06FF: script = "arabic"
+            case 0x0400...0x04FF: script = "cyrillic"
+            case 0x0A80...0x0AFF: script = "gujarati"
+            case 0x0A00...0x0A7F: script = "gurmukhi"
+            case 0x0B80...0x0BFF: script = "tamil"
+            case 0x0C00...0x0C7F: script = "telugu"
+            case 0x0C80...0x0CFF: script = "kannada"
+            case 0x0D00...0x0D7F: script = "malayalam"
+            case 0x0980...0x09FF: script = "bengali"
+            case 0x3040...0x30FF: script = "japanese"
+            case 0xAC00...0xD7AF: script = "korean"
+            case 0x4E00...0x9FFF, 0x3400...0x4DBF: script = "chinese"
+            default: script = "other"
+            }
+            if allowed.contains(script) { ok += 1 } else { bad += 1 }
+        }
+        return ok + bad == 0 || Double(bad) / Double(ok + bad) < 0.3
+    }
+
+    /// Fraction of 20 ms frames with speech energy, used to skip chunks that are mostly silence.
+    static func voicedRatio(_ samples: [Float]) -> Double {
+        let frame = 320
+        guard samples.count >= frame else { return 0 }
+        var voiced = 0, total = 0
+        var i = 0
+        while i + frame <= samples.count {
+            var e: Float = 0
+            for j in i..<i + frame { e += samples[j] * samples[j] }
+            if e / Float(frame) > 0.0004 { voiced += 1 }
+            total += 1
+            i += frame
+        }
+        return Double(voiced) / Double(total)
+    }
+
+    /// Drops a line that largely repeats an overlapping earlier line (overlapping diarizer turns).
+    static func dedupeOverlaps(_ lines: [TranscriptLine]) -> [TranscriptLine] {
+        var out: [TranscriptLine] = []
+        for line in lines.sorted(by: { $0.start < $1.start }) {
+            let words = Set(line.text.lowercased().split(separator: " "))
+            var duplicate = false
+            for prev in out.suffix(3) {
+                let overlap = min(line.end, prev.end) - max(line.start, prev.start)
+                guard overlap > 0, overlap / max(0.1, line.end - line.start) > 0.5 else { continue }
+                let other = Set(prev.text.lowercased().split(separator: " "))
+                let jaccard = Double(words.intersection(other).count) / Double(max(1, words.union(other).count))
+                if jaccard > 0.5 { duplicate = true; break }
+            }
+            if !duplicate { out.append(line) }
+        }
+        return out
+    }
+
+    /// Runs of speech by energy: 20 ms frames above a floor, gaps under 0.8 s bridged, runs under 0.4 s dropped.
+    static func speechRuns(_ samples: [Float]) -> [(Double, Double)] {
+        let frame = 320
+        var active: [Bool] = []
+        var i = 0
+        while i + frame <= samples.count {
+            var e: Float = 0
+            for j in i..<i + frame { e += samples[j] * samples[j] }
+            active.append(e / Float(frame) > 0.0004)     // about -34 dBFS after normalization
+            i += frame
+        }
+        var runs: [(Double, Double)] = []
+        var start: Int? = nil
+        var silence = 0
+        for (k, on) in active.enumerated() {
+            if on {
+                if start == nil { start = k }
+                silence = 0
+            } else if let s = start {
+                silence += 1
+                if silence >= 40 {                              // 0.8 s of silence closes the run
+                    runs.append((Double(s) * 0.02, Double(k - silence + 1) * 0.02))
+                    start = nil; silence = 0
+                }
+            }
+        }
+        if let s = start { runs.append((Double(s) * 0.02, Double(active.count) * 0.02)) }
+        return runs.filter { $0.1 - $0.0 >= 0.4 }
+    }
+
+    /// Brings quiet channels up: scales so the loud 5% of 20 ms frames sit near -14 dBFS, gain capped at 30x.
+    static func normalize(_ samples: [Float]) -> [Float] {
+        let frame = 320
+        var rms: [Float] = []
+        var i = 0
+        while i + frame <= samples.count {
+            var e: Float = 0
+            for j in i..<i + frame { e += samples[j] * samples[j] }
+            rms.append((e / Float(frame)).squareRoot())
+            i += frame
+        }
+        guard !rms.isEmpty else { return samples }
+        let sorted = rms.sorted()
+        let loud = sorted[Int(Double(sorted.count - 1) * 0.95)]
+        guard loud > 0.0005 else { return samples }
+        let gain = min(30, 0.2 / loud)
+        guard gain > 1.1 else { return samples }
+        return samples.map { max(-1, min(1, $0 * gain)) }
     }
 
     /// Autoregressive recognizers sometimes loop ("एक existing plaza हैं, और एक existing plaza हैं, ...").

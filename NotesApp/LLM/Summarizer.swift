@@ -10,6 +10,8 @@ enum AppSettings {
     static let engineKey = "asr.engine"            // "parakeet" | "whisper"
     static let whisperModelKey = "asr.whisperModel"
     static let languageKey = "asr.language"        // "" = auto-detect (Whisper only)
+    static let scriptsKey = "asr.scripts"          // comma list of scripts the meetings may contain
+    static let defaultScripts = "latin,devanagari"
 
     static let defaultWhisperModel = "openai_whisper-large-v3-v20240930_turbo"
     static let defaultModel = "gemma4:e4b"
@@ -49,6 +51,10 @@ enum AppSettings {
 
     static var engine: ASREngine { ASREngine(rawValue: UserDefaults.standard.string(forKey: engineKey) ?? "") ?? .parakeet }
     static var whisperModel: String { UserDefaults.standard.string(forKey: whisperModelKey).flatMap { $0.isEmpty ? nil : $0 } ?? defaultWhisperModel }
+    static var expectedScripts: Set<String> {
+        let raw = UserDefaults.standard.string(forKey: scriptsKey).flatMap { $0.isEmpty ? nil : $0 } ?? defaultScripts
+        return Set(raw.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces).lowercased() })
+    }
     static var language: String? { UserDefaults.standard.string(forKey: languageKey).flatMap { $0.isEmpty ? nil : $0 } }
     static var model: String { UserDefaults.standard.string(forKey: modelKey).flatMap { $0.isEmpty ? nil : $0 } ?? defaultModel }
     static var baseURL: URL { URL(string: UserDefaults.standard.string(forKey: urlKey) ?? "") ?? URL(string: defaultURL)! }

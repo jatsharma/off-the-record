@@ -64,6 +64,9 @@ struct NotesApp: App {
 
         Settings {
             Themed { SettingsView() }
+                .environmentObject(store)
+                .environmentObject(recorder)
+                .environmentObject(recording)
         }
     }
 }

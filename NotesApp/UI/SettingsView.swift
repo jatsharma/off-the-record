@@ -17,6 +17,7 @@ struct GeneralSettings: View {
     @AppStorage(AppSettings.engineKey) private var engine = ASREngine.parakeet.rawValue
     @AppStorage(AppSettings.whisperModelKey) private var whisperModel = AppSettings.defaultWhisperModel
     @AppStorage(AppSettings.languageKey) private var language = ""
+    @AppStorage(AppSettings.scriptsKey) private var scripts = AppSettings.defaultScripts
     @AppStorage(AppSettings.modelKey) private var model = AppSettings.defaultModel
     @AppStorage(AppSettings.urlKey) private var url = AppSettings.defaultURL
     @AppStorage(AppSettings.contextKey) private var contextTokens = AppSettings.defaultContextTokens
@@ -61,6 +62,9 @@ struct GeneralSettings: View {
                 }
                 if ASREngine(rawValue: engine)?.takesLanguageHint == true {
                     TextField("Language code (blank = auto-detect)", text: $language, prompt: Text("auto"))
+                    TextField("Scripts your meetings use", text: $scripts, prompt: Text(AppSettings.defaultScripts))
+                    Text("Lines written in other scripts are dropped; short quiet stretches otherwise come back as Chinese or Korean. Options: latin, devanagari, arabic, cyrillic, gujarati, gurmukhi, tamil, telugu, kannada, malayalam, bengali, japanese, korean, chinese.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
                 Text(engineHelp).font(.caption).foregroundStyle(.secondary)
             }

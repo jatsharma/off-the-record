@@ -102,8 +102,14 @@ Settings → Speech recognition switches between three engines. Measured on the 
 | Qwen3-ASR 0.6B | 17 min | 6,070 (1,890 Devanagari) | Proper code-switched output: Hindi in Devanagari, English terms in Latin script. Occasional repetition loops (collapsed automatically) and misdetected short chunks |
 
 Qwen3 has a 30-second window and no timestamps, so the app diarizes first and transcribes each
-speaker turn on its own; timing and speaker labels come from the diarizer. Use it for
-Hindi-heavy meetings when quality matters more than turnaround; Parakeet for English.
+speaker turn on its own; timing and speaker labels come from the diarizer. On two-channel
+recordings your side is cut into speech runs and labelled You. Chunks that are mostly silence are
+skipped, lines in scripts you do not use (Settings → "Scripts your meetings use", default Latin +
+Devanagari) are dropped, and overlapping duplicate turns are removed. Use it for Hindi or Hinglish
+meetings; it runs at roughly 2x real time. Parakeet for English.
+
+Both engines normalise a quiet microphone channel before recognition and suppress the call's echo
+in it, so a laptop mic across the desk still yields your lines.
 
 Qwen3 was removed from FluidAudio upstream in June 2026 (#676). `scripts/fluidaudio-qwen3.patch`
 restores it into the vendored copy and ports its downloader to the current API.
