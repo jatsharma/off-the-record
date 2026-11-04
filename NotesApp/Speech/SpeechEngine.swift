@@ -195,11 +195,33 @@ actor SpeechEngine {
             let lo = max(0, Int((c.start - 0.2) * 16_000)), hi = min(samples.count, Int((c.end + 0.2) * 16_000))
             guard hi > lo else { continue }
             let text = (try? await qwen3.transcribe(audioSamples: Array(samples[lo..<hi]), language: language)) ?? ""
-            let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let clean = Self.collapseRepeats(text.trimmingCharacters(in: .whitespacesAndNewlines))
             guard clean.contains(where: { $0.isLetter || $0.isNumber }) else { continue }
             lines.append(TranscriptLine(start: c.start, end: c.end, speaker: c.speaker, text: clean))
         }
         return lines
+    }
+
+    /// Autoregressive recognizers sometimes loop ("एक existing plaza हैं, और एक existing plaza हैं, ...").
+    /// Collapse any run of 1 to 6 words repeated three or more times in a row down to one copy.
+    static func collapseRepeats(_ text: String) -> String {
+        var words = text.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
+        var i = 0
+        while i < words.count {
+            var collapsed = false
+            for n in 1...6 where i + 3 * n <= words.count {
+                let unit = Array(words[i..<i + n])
+                var reps = 1
+                while i + (reps + 1) * n <= words.count, Array(words[i + reps * n..<i + (reps + 1) * n]) == unit { reps += 1 }
+                if reps >= 3 {
+                    words.removeSubrange(i + n..<i + reps * n)
+                    collapsed = true
+                    break
+                }
+            }
+            if !collapsed { i += 1 }
+        }
+        return words.joined(separator: " ")
     }
 
     // MARK: - Audio loading

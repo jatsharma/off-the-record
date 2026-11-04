@@ -79,16 +79,21 @@ project.yml  XcodeGen spec; Makefile wraps gen/build/run/setup
 
 ## Speech engines
 
-Settings → Speech recognition switches between two engines:
+Settings → Speech recognition switches between three engines. Measured on the same real
+32-minute Hindi-English meeting on an M1 Pro, models already downloaded:
 
-| Engine | Speed on M1 Pro (32-minute file) | Languages | Notes |
+| Engine | Transcribe + diarize | Words captured | Hinglish handling |
 | --- | --- | --- | --- |
-| Parakeet TDT 0.6b v3 (default) | about 70 s incl. diarization | English + 24 European | Best English accuracy and coverage; Hindi comes out as phonetic English |
-| Whisper large-v3-turbo | about 7 min incl. diarization | 99 incl. Hindi | Writes Hindi in Devanagari when auto-detecting; drops about half the words on code-switched Hinglish audio; forcing `en` replaces Hindi with "foreign" |
+| Parakeet TDT 0.6b v3 (default) | 70 s | 3,144 | Hindi comes out as phonetic English; best for English meetings |
+| Whisper large-v3-turbo | 7 min | 1,461 (391 Devanagari) | Flips language per chunk and drops about half the speech; forcing `en` replaces Hindi with "foreign" |
+| Qwen3-ASR 0.6B | 17 min | 6,070 (1,890 Devanagari) | Proper code-switched output: Hindi in Devanagari, English terms in Latin script. Occasional repetition loops (collapsed automatically) and misdetected short chunks |
 
-Measured on a real Hindi-English meeting: Parakeet captured 3,144 words, Whisper (auto) 1,461
-of which 391 in Devanagari, Whisper (forced en) 1,120. Neither handles Hinglish well; Parakeet
-gives the more useful notes today.
+Qwen3 has a 30-second window and no timestamps, so the app diarizes first and transcribes each
+speaker turn on its own; timing and speaker labels come from the diarizer. Use it for
+Hindi-heavy meetings when quality matters more than turnaround; Parakeet for English.
+
+Qwen3 was removed from FluidAudio upstream in June 2026 (#676). `scripts/fluidaudio-qwen3.patch`
+restores it into the vendored copy and ports its downloader to the current API.
 
 ## Settings
 
