@@ -135,12 +135,14 @@ final class MeetingStore: ObservableObject {
             stageStarted[meetingId] = Date()
             fraction[meetingId] = 0
             let known = knownVoices()
-            let result = try await SpeechEngine.shared.transcribe(file: audio, knownVoices: known) { [weak self] fraction, text in
+            let result = try await SpeechEngine.shared.transcribe(file: audio, knownVoices: known,
+                                                                  context: Vocabulary.recognizerContext(for: meetingId)) { [weak self] fraction, text in
                 Task { @MainActor in self?.progress[meetingId] = text; self?.fraction[meetingId] = fraction }
             }
             fraction[meetingId] = nil
             try saveTranscript(result.lines, for: meetingId)
             saveSpeakerVectors(result.speakerVectors, for: meetingId)
+            if Vocabulary.cleanupEnabled { await cleanTranscript(meetingId: meetingId) }
             await summarize(meetingId: meetingId)
         } catch {
             fail(meetingId, error)
@@ -168,14 +170,15 @@ final class MeetingStore: ObservableObject {
                 try await client.pull(model) { [weak self] text in Task { @MainActor in self?.progress[meetingId] = text } }
             }
             progress[meetingId] = "Writing notes with \(model)"
-            let prompt = Summarizer.buildPrompt(meeting: meeting, segments: segments)
+            let prompt = Summarizer.buildPrompt(meeting: meeting, segments: segments, glossary: Vocabulary.terms(for: meetingId))
             var text = ""
             for try await token in client.chat(model: model, system: AppSettings.systemPrompt, user: prompt,
                                                contextTokens: AppSettings.contextTokens) {
                 text += token
                 liveSummary[meetingId] = text
             }
-            let final = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let final = text.replacingOccurrences(of: " [?]", with: "").replacingOccurrences(of: "[?]", with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
             update(meetingId) { $0.summary = final; $0.status = .done }
             liveSummary[meetingId] = nil
             if Self.isAutoTitle(meeting.title) {
@@ -189,6 +192,52 @@ final class MeetingStore: ObservableObject {
         } catch {
             liveSummary[meetingId] = nil
             fail(meetingId, error)
+        }
+    }
+
+    /// Romanizes the transcript and restores glossary terms (see `TranscriptCleaner`). Keeps the
+    /// recognizer's text in `rawText`. A failure here is logged and skipped: notes still get written.
+    func cleanTranscript(meetingId: String) async {
+        let segments = self.segments(for: meetingId)
+        guard !segments.isEmpty else { return }
+        let lines = segments.enumerated().map { TranscriptCleaner.Line(id: $0.offset + 1, speaker: $0.element.speaker, text: $0.element.text, hinted: $0.element.altText) }
+        do {
+            let client = OllamaClient(baseURL: AppSettings.baseURL)
+            progress[meetingId] = "Starting Ollama"
+            try await client.ensureRunning()
+            let model = AppSettings.model
+            guard try await client.hasModel(model) else { return }   // notes step pulls it; skip clean-up this once
+            progress[meetingId] = "Checking terms with \(model)"
+            let fixed = try await TranscriptCleaner.clean(lines, glossary: Vocabulary.terms(for: meetingId), client: client, model: model) { [weak self] f in
+                self?.fraction[meetingId] = f
+            }
+            fraction[meetingId] = nil
+            try await db.pool.write { db in
+                for (i, segment) in segments.enumerated() {
+                    guard let text = fixed[i + 1], text != segment.text else { continue }
+                    var s = segment
+                    if s.rawText == nil { s.rawText = segment.text }
+                    s.text = text
+                    try s.update(db)
+                }
+            }
+        } catch {
+            fraction[meetingId] = nil
+            NSLog("Transcript clean-up failed, keeping the recognizer's text: \(error.localizedDescription)")
+        }
+    }
+
+    /// A hand correction of one transcript line. New names and terms in it join the glossary, so
+    /// later meetings are recognized and cleaned with them.
+    func editSegment(_ segment: Segment, to text: String) {
+        let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty, clean != segment.text else { return }
+        Vocabulary.learn(Vocabulary.newTerms(from: segment.text, to: clean))
+        try? db.pool.write { db in
+            var s = segment
+            if s.rawText == nil { s.rawText = segment.text }
+            s.text = clean
+            try s.update(db)
         }
     }
 
@@ -379,7 +428,7 @@ final class MeetingStore: ObservableObject {
             try Segment.filter(Column("meetingId") == meetingId).deleteAll(db)
             for line in lines {
                 try Segment(id: UUID().uuidString, meetingId: meetingId, startTime: line.start, endTime: line.end,
-                            speaker: line.speaker, text: line.text).insert(db)
+                            speaker: line.speaker, text: line.text, altText: line.altText).insert(db)
             }
         }
     }

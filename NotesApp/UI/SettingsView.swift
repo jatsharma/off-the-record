@@ -4,6 +4,7 @@ struct SettingsView: View {
     var body: some View {
         TabView {
             GeneralSettings().tabItem { Label("General", systemImage: "gearshape") }
+            VocabularySettings().tabItem { Label("Vocabulary", systemImage: "character.book.closed") }
             PromptSettings().tabItem { Label("Notes prompt", systemImage: "text.alignleft") }
             ModelsSettings().tabItem { Label("Models", systemImage: "internaldrive") }
             StorageSettings().tabItem { Label("Storage", systemImage: "externaldrive") }
@@ -83,8 +84,38 @@ struct GeneralSettings: View {
         switch ASREngine(rawValue: engine) ?? .parakeet {
         case .parakeet: return "Fastest and most accurate for English. Hindi comes out as English sounds. About 70 s per 30 minutes of audio."
         case .whisper: return "99 languages. Slower (about 7 minutes per 30 minutes of audio) and drops speech on mixed-language calls."
-        case .qwen3: return "Writes Hindi in Devanagari and keeps English terms. Slow: about 17 minutes per 30 minutes of audio, transcribed one speaker turn at a time."
+        case .qwen3: return "Best of the three for Hinglish; uses your Vocabulary list. Hindi comes out in Devanagari and the clean-up pass romanizes it. Slow: about 20 minutes per 30 minutes of audio, transcribed in pieces of up to 15 seconds."
         }
+    }
+}
+
+/// The team glossary and the two features that use or grow it.
+struct VocabularySettings: View {
+    @AppStorage(Vocabulary.termsKey) private var terms = ""
+    @AppStorage(Vocabulary.cleanupKey) private var cleanup = true
+    @AppStorage(Vocabulary.screenKey) private var readScreen = true
+
+    var body: some View {
+        Form {
+            Section {
+                TextEditor(text: $terms)
+                    .font(.body.monospaced())
+                    .frame(minHeight: 200)
+            } header: {
+                Text("Names and terms your meetings use (\(Vocabulary.parse(terms).count))")
+            } footer: {
+                Text("One per line, spelled the way you want them written: Solana, TimescaleDB, DexScreener, people's names. The recognizer is nudged toward them, the clean-up pass restores them where the sound matches, and the notes use these spellings. Words you type when correcting a transcript line are added here automatically. Keep the most important terms near the top: the recognizer only has room for about 40.")
+            }
+            Section("Transcript") {
+                Toggle("Clean up the transcript with the notes model", isOn: $cleanup)
+                Text("After recognition, rewrites each line in romanized Hinglish and fixes misheard terms using this list. The recognizer's original text is kept on every changed line. Adds about a minute per 30 minutes of audio.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Toggle("Read on-screen text while recording", isOn: $readScreen)
+                Text("Every 20 seconds during a recording, text on your screen (shared slides, code, dashboards) is read on this Mac and kept with the meeting, so names spelled there are recognized correctly. This app's own windows are skipped. Needs the Screen & System Audio Recording permission the app already uses.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
     }
 }
 
@@ -100,7 +131,7 @@ struct PromptSettings: View {
             } header: {
                 Text("What the model is asked to write")
             } footer: {
-                Text("Placeholders: {{title}}, {{date}}, {{transcript}}. A fixed system line also tells the model to stay inside the transcript and never invent.")
+                Text("Placeholders: {{title}}, {{date}}, {{glossary}}, {{transcript}}. A fixed system line also tells the model to stay inside the transcript and never invent.")
             }
             Section {
                 HStack {

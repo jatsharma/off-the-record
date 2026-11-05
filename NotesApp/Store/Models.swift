@@ -31,6 +31,19 @@ struct Segment: Codable, Identifiable, Hashable, FetchableRecord, PersistableRec
     var endTime: Double
     var speaker: String?
     var text: String
+    /// What the recognizer heard, kept when the clean-up pass or the user changed `text`.
+    var rawText: String? = nil
+    /// The recognizer's second reading made with the glossary as context, when it differed.
+    var altText: String? = nil
+}
+
+/// Text read off the screen during a recording, used to learn how this meeting's terms are spelled.
+struct ScreenText: Codable, Identifiable, FetchableRecord, PersistableRecord {
+    static let databaseTableName = "screenText"
+    var id: String
+    var meetingId: String
+    var capturedAt: Date
+    var text: String
 }
 
 /// A named voice, averaged from every meeting where the user named that speaker.

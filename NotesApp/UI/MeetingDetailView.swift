@@ -16,6 +16,8 @@ struct MeetingDetailView: View {
     @State private var notesDraft = ""
     @State private var renaming: String?? = nil   // .some(speaker) while the popover is open
     @State private var newSpeakerName = ""
+    @State private var editingSegment: Segment?
+    @State private var segmentDraft = ""
 
     enum Tab: String, CaseIterable { case notes = "Notes", transcript = "Transcript" }
     private enum Confirm: Identifiable { case audio, transcript, meeting; var id: Int { hashValue } }
@@ -147,7 +149,8 @@ struct MeetingDetailView: View {
                                               color: SpeakerPalette.color(for: segment.speaker, in: observer.segments),
                                               canPlay: meeting.audioURL != nil,
                                               onSeek: { listen(meeting, from: segment.startTime) },
-                                              onRename: { renaming = .some(segment.speaker); newSpeakerName = segment.speaker ?? "" })
+                                              onRename: { renaming = .some(segment.speaker); newSpeakerName = segment.speaker ?? "" },
+                                              onEdit: { segmentDraft = segment.text; editingSegment = segment })
                                 .id(segment.id)
                             }
                         }
@@ -163,6 +166,29 @@ struct MeetingDetailView: View {
                     }
                 }
             }
+        }
+        .sheet(item: $editingSegment) { segment in
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Correct this line").font(.headline)
+                if let raw = segment.rawText, raw != segment.text {
+                    Text("Recognizer heard: \(raw)").font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                }
+                TextEditor(text: $segmentDraft)
+                    .font(.body)
+                    .frame(width: 460, height: 120)
+                    .scrollContentBackground(.hidden)
+                    .padding(6)
+                    .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 6))
+                Text("Names and terms you type here are added to Settings ▸ Vocabulary, so later meetings get them right.")
+                    .font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    Spacer()
+                    Button("Cancel") { editingSegment = nil }.keyboardShortcut(.cancelAction)
+                    Button("Save") { store.editSegment(segment, to: segmentDraft); editingSegment = nil }
+                        .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
+                }
+            }
+            .padding(18)
         }
         .popover(isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
             VStack(alignment: .leading, spacing: 10) {
@@ -392,6 +418,8 @@ struct TranscriptRow: View {
     let canPlay: Bool
     let onSeek: () -> Void
     let onRename: () -> Void
+    let onEdit: () -> Void
+    @State private var hovering = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -415,7 +443,22 @@ struct TranscriptRow: View {
                 Text(segment.text).textSelection(.enabled)
             }
             Spacer(minLength: 0)
+            VStack(spacing: 6) {
+                Button(action: onEdit) { Image(systemName: "pencil") }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .help("Correct this line")
+                    .opacity(hovering ? 1 : 0)
+                if let raw = segment.rawText, raw != segment.text {
+                    Image(systemName: "wand.and.sparkles")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .help("Corrected. The recognizer heard: \(raw)")
+                }
+            }
         }
+        .onHover { hovering = $0 }
+        .contextMenu { Button("Correct this line…", action: onEdit) }
         .padding(.vertical, 6).padding(.horizontal, 8)
         .background(isCurrent ? AnyShapeStyle(.tint.opacity(0.14)) : AnyShapeStyle(.clear), in: RoundedRectangle(cornerRadius: 6))
     }

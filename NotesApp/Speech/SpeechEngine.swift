@@ -28,6 +28,9 @@ struct TranscriptLine {
     var end: Double
     var speaker: String?
     var text: String
+    /// A second reading of the same audio made with the glossary as context (Qwen3 only). It spells
+    /// terms better but can drop words or invent glossary terms, so the clean-up pass weighs both.
+    var altText: String? = nil
 }
 
 /// Lines plus one averaged voice embedding per speaker label, for voice memory.
@@ -108,7 +111,9 @@ actor SpeechEngine {
         }
     }
 
-    func transcribe(file: URL, knownVoices: [KnownVoice] = [], report: @escaping ProgressReport) async throws -> TranscriptResult {
+    /// - context: glossary text for recognizers that accept it (Qwen3-ASR); see `Vocabulary`.
+    func transcribe(file: URL, knownVoices: [KnownVoice] = [], context: String? = nil,
+                    report: @escaping ProgressReport) async throws -> TranscriptResult {
         let engine = AppSettings.engine
         let status: @Sendable (String) -> Void = { report(nil, $0) }
         try await prepare(engine: engine, status: status)
@@ -152,14 +157,14 @@ actor SpeechEngine {
                 let mic = Self.normalize(Self.suppressEcho(mic: channels[0], system: channels[1]))
                 let call = Self.normalize(channels[1])
                 let mine = try await transcribeByTurns(samples: mic, duration: duration, fixedSpeaker: "You",
-                                                       knownVoices: [], status: status)
+                                                       knownVoices: [], context: context, status: status)
                 let theirs = try await transcribeByTurns(samples: call, duration: duration, fixedSpeaker: nil,
-                                                         knownVoices: knownVoices, singleLabel: "Them", status: status)
+                                                         knownVoices: knownVoices, singleLabel: "Them", context: context, status: status)
                 let lines = (mine.lines + theirs.lines).sorted { $0.start < $1.start }
                 return TranscriptResult(lines: lines, speakerVectors: theirs.speakerVectors)
             }
             return try await transcribeByTurns(samples: samples, duration: duration, fixedSpeaker: nil,
-                                               knownVoices: knownVoices, singleLabel: nil, status: status)
+                                               knownVoices: knownVoices, singleLabel: nil, context: context, status: status)
         }
 
         let pieces: [TimedPiece]
@@ -185,6 +190,12 @@ actor SpeechEngine {
             options.wordTimestamps = true
             options.skipSpecialTokens = true
             options.chunkingStrategy = .vad
+            // Whisper conditions on prompt tokens as "previous text"; a glossary there nudges spellings.
+            if let context, let tokenizer = whisper.tokenizer {
+                let ids = tokenizer.encode(text: " " + context).filter { $0 < tokenizer.specialTokens.specialTokenBegin }
+                options.promptTokens = Array(ids.suffix(150))
+                options.usePrefillPrompt = true
+            }
             let results = try await whisper.transcribe(audioArray: samples, decodeOptions: options)
             let strip: (String) -> String = { $0.replacingOccurrences(of: "<\\|[^|]*\\|>", with: "", options: .regularExpression) }
             fullText = strip(results.map(\.text).joined(separator: " "))
@@ -300,10 +311,10 @@ actor SpeechEngine {
 
     // MARK: - Turn-by-turn transcription (engines without timestamps, 30 s max input)
 
-    /// Diarize first, then transcribe each speaker turn (capped at 25 s) on its own.
+    /// Diarize first, then transcribe each speaker turn (capped at 15 s, split at pauses) on its own.
     /// Timing and speaker come from the diarizer; the recognizer only has to produce text.
     private func transcribeByTurns(samples: [Float], duration: Double, fixedSpeaker: String?, knownVoices: [KnownVoice],
-                                   singleLabel: String? = nil,
+                                   singleLabel: String? = nil, context: String? = nil,
                                    status: @escaping @Sendable (String) -> Void) async throws -> TranscriptResult {
         guard let diarizer, let qwen3 else { throw SpeechError.notLoaded }
         var segments: [TimedSpeakerSegment] = []
@@ -318,10 +329,13 @@ actor SpeechEngine {
             energyTurns = Self.speechRuns(samples)
         }
 
-        // Build chunks: consecutive same-speaker turns joined up to 25 s; silence gaps over 2 s
+        // Build chunks: consecutive same-speaker turns joined up to 15 s; silence gaps over 2 s
         // that the diarizer did not label become unlabelled chunks so no speech is skipped.
+        // Qwen3's decoder holds 512 tokens and audio takes 13 per second: a 25 s chunk left about
+        // 170 tokens for text, so long Hindi turns came back cut off mid-sentence. 15 s leaves
+        // room for the glossary and about 200 tokens of text.
         struct Chunk { var start: Double; var end: Double; var speaker: String? }
-        let maxLen = 25.0
+        let maxLen = 15.0
         var chunks: [Chunk] = []
         var cursor = 0.0
         if let fixedSpeaker {
@@ -347,11 +361,15 @@ actor SpeechEngine {
         }
         if fixedSpeaker == nil, duration - cursor > 2 { chunks.append(Chunk(start: cursor, end: duration, speaker: nil)) }
         if chunks.isEmpty, fixedSpeaker == nil { chunks = [Chunk(start: 0, end: duration, speaker: nil)] }
-        // Split anything still longer than the model's window.
+        // Split anything still longer than the window at its quietest moment, not mid-word.
         var pieces: [Chunk] = []
         for c in chunks {
             var s = c.start
-            while c.end - s > maxLen { pieces.append(Chunk(start: s, end: s + maxLen, speaker: c.speaker)); s += maxLen }
+            while c.end - s > maxLen {
+                let cut = Self.quietestPoint(in: samples, from: s + maxLen * 0.4, to: s + maxLen)
+                pieces.append(Chunk(start: s, end: cut, speaker: c.speaker))
+                s = cut
+            }
             pieces.append(Chunk(start: s, end: c.end, speaker: c.speaker))
         }
 
@@ -363,12 +381,22 @@ actor SpeechEngine {
             guard hi > lo else { continue }
             let chunk = Array(samples[lo..<hi])
             guard Self.voicedRatio(chunk) >= 0.25 else { continue }          // mostly silence: skip
-            let text = (try? await qwen3.transcribe(audioSamples: chunk, language: language)) ?? ""
-            let clean = Self.collapseRepeats(text.trimmingCharacters(in: .whitespacesAndNewlines))
-            guard clean.contains(where: { $0.isLetter || $0.isNumber }), Self.matchesExpectedScripts(clean) else { continue }
-            lines.append(TranscriptLine(start: c.start, end: c.end, speaker: c.speaker, text: clean))
+            // Two readings when there is a glossary: plain (faithful) and hinted (better spellings).
+            let plain = await readQwen3(qwen3, chunk, language: language, context: nil)
+            let hinted = context == nil ? nil : await readQwen3(qwen3, chunk, language: language, context: context)
+            guard let text = plain ?? hinted else { continue }
+            lines.append(TranscriptLine(start: c.start, end: c.end, speaker: c.speaker, text: text,
+                                        altText: plain == nil || hinted == plain ? nil : hinted))
         }
         return TranscriptResult(lines: Self.dedupeOverlaps(lines), speakerVectors: vectors)
+    }
+
+    /// One recognizer pass over a chunk, cleaned and filtered; nil when nothing usable came back.
+    private func readQwen3(_ qwen3: Qwen3AsrManager, _ chunk: [Float], language: String?, context: String?) async -> String? {
+        let text = (try? await qwen3.transcribe(audioSamples: chunk, language: language, context: context)) ?? ""
+        let clean = Self.collapseRepeats(text.trimmingCharacters(in: .whitespacesAndNewlines))
+        guard clean.contains(where: { $0.isLetter || $0.isNumber }), Self.matchesExpectedScripts(clean) else { return nil }
+        return clean
     }
 
     /// Rejects recognizer output written in a script the meeting is not expected to contain
@@ -399,6 +427,25 @@ actor SpeechEngine {
             if allowed.contains(script) { ok += 1 } else { bad += 1 }
         }
         return ok + bad == 0 || Double(bad) / Double(ok + bad) < 0.3
+    }
+
+    /// The start (in seconds) of the quietest 300 ms between two times, where a cut loses the least.
+    static func quietestPoint(in samples: [Float], from start: Double, to end: Double) -> Double {
+        let frame = 320, window = 15                     // 20 ms frames, 300 ms window
+        let lo = max(0, Int(start * 16_000) / frame), hi = min(samples.count / frame, Int(end * 16_000) / frame)
+        guard hi - lo > window else { return end }
+        var energy = [Float](repeating: 0, count: hi - lo)
+        for k in lo..<hi {
+            var e: Float = 0
+            for j in k * frame..<(k + 1) * frame { e += samples[j] * samples[j] }
+            energy[k - lo] = e
+        }
+        var sum = energy[0..<window].reduce(0, +), best = sum, bestAt = 0
+        for k in window..<energy.count {
+            sum += energy[k] - energy[k - window]
+            if sum < best { best = sum; bestAt = k - window + 1 }
+        }
+        return Double(lo + bestAt + window / 2) * 0.02
     }
 
     /// Fraction of 20 ms frames with speech energy, used to skip chunks that are mostly silence.

@@ -69,7 +69,8 @@ struct OllamaClient {
     }
 
     /// Streams assistant tokens for one chat turn.
-    func chat(model: String, system: String, user: String, contextTokens: Int) -> AsyncThrowingStream<String, Error> {
+    func chat(model: String, system: String, user: String, contextTokens: Int,
+              temperature: Double = 0.2) -> AsyncThrowingStream<String, Error> {
         struct Chunk: Decodable { struct Message: Decodable { let content: String? }; let message: Message?; let done: Bool? }
         return AsyncThrowingStream { continuation in
             let task = Task {
@@ -84,7 +85,7 @@ struct OllamaClient {
                             ["role": "system", "content": system],
                             ["role": "user", "content": user],
                         ],
-                        "options": ["num_ctx": contextTokens, "temperature": 0.2],
+                        "options": ["num_ctx": contextTokens, "temperature": temperature],
                     ])
                     let (bytes, response) = try await Self.session.bytes(for: request)
                     let code = (response as? HTTPURLResponse)?.statusCode ?? 0

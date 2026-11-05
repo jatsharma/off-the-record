@@ -165,10 +165,10 @@ index 0000000..dfcf434
 +}
 diff --git a/Sources/FluidAudio/ASR/Qwen3/Qwen3AsrManager.swift b/Sources/FluidAudio/ASR/Qwen3/Qwen3AsrManager.swift
 new file mode 100644
-index 0000000..fdca84a
+index 0000000..b18afe9
 --- /dev/null
 +++ b/Sources/FluidAudio/ASR/Qwen3/Qwen3AsrManager.swift
-@@ -0,0 +1,559 @@
+@@ -0,0 +1,606 @@
 +import Accelerate
 +@preconcurrency import CoreML
 +import Foundation
@@ -216,13 +216,14 @@ index 0000000..fdca84a
 +    public func transcribe(
 +        audioSamples: [Float],
 +        language: String? = nil,
++        context: String? = nil,
 +        maxNewTokens: Int = 512
 +    ) async throws -> String {
 +        let mel = melExtractor.compute(audio: audioSamples)
 +        guard !mel.isEmpty else {
 +            throw Qwen3AsrError.generationFailed("Audio too short to extract mel spectrogram")
 +        }
-+        return try await transcribe(melSpectrogram: mel, language: language, maxNewTokens: maxNewTokens)
++        return try await transcribe(melSpectrogram: mel, language: language, context: context, maxNewTokens: maxNewTokens)
 +    }
 +
 +    /// Transcribe raw audio samples with typed language.
@@ -239,9 +240,12 @@ index 0000000..fdca84a
 +    }
 +
 +    /// Transcribe from a pre-computed mel spectrogram.
++    /// - context: free text placed in the system turn, as upstream Qwen3-ASR does; a list of
++    ///   names and technical terms biases recognition toward their spelling.
 +    public func transcribe(
 +        melSpectrogram: [[Float]],
 +        language: String? = nil,
++        context: String? = nil,
 +        maxNewTokens: Int = 512
 +    ) async throws -> String {
 +        guard let models = models else {
@@ -268,7 +272,13 @@ index 0000000..fdca84a
 +        let audioEncodeTime = CFAbsoluteTimeGetCurrent() - t1
 +
 +        // Step 2: Build chat template with audio tokens
-+        let promptTokens = buildPromptTokens(numAudioFrames: numAudioFrames, language: resolvedLanguage)
++        var contextTokens = context.map { encodeText($0, vocabulary: models.vocabulary) } ?? []
++        // Keep room in the 512-token cache for the audio and at least 160 tokens of output.
++        let contextBudget = max(0, Qwen3AsrConfig.maxCacheSeqLen - numAudioFrames - 30 - 160)
++        if contextTokens.count > contextBudget { contextTokens = Array(contextTokens.prefix(contextBudget)) }
++        let promptTokens = buildPromptTokens(
++            numAudioFrames: numAudioFrames, language: resolvedLanguage, contextTokens: contextTokens,
++            vocabulary: models.vocabulary)
 +
 +        // Step 3: Swift-side embedding + audio merge
 +        let t3 = CFAbsoluteTimeGetCurrent()
@@ -416,16 +426,17 @@ index 0000000..fdca84a
 +        .macedonian: [3246, 56541, 279, 7461, 311, 17067, 103881, 1467, 13],
 +    ]
 +
-+    private func buildPromptTokens(numAudioFrames: Int, language: Qwen3AsrConfig.Language?) -> [Int32] {
++    /// Same layout as upstream `_build_text_prompt`: the system turn holds the context text, and a
++    /// forced language is written as "language X<asr_text>" after the assistant turn opens.
++    private func buildPromptTokens(
++        numAudioFrames: Int, language: Qwen3AsrConfig.Language?, contextTokens: [Int32], vocabulary: [Int: String]
++    ) -> [Int32] {
 +        var tokens: [Int32] = []
 +
-+        // System message with optional task description
 +        tokens.append(Int32(Qwen3AsrConfig.imStartTokenId))
 +        tokens.append(Int32(Qwen3AsrConfig.systemTokenId))
 +        tokens.append(Int32(Qwen3AsrConfig.newlineTokenId))
-+        if let lang = language, let taskToks = Self.taskTokens[lang] {
-+            tokens.append(contentsOf: taskToks)
-+        }
++        tokens.append(contentsOf: contextTokens)
 +        tokens.append(Int32(Qwen3AsrConfig.imEndTokenId))
 +        tokens.append(Int32(Qwen3AsrConfig.newlineTokenId))
 +
@@ -445,6 +456,10 @@ index 0000000..fdca84a
 +        tokens.append(Int32(Qwen3AsrConfig.imStartTokenId))
 +        tokens.append(Int32(Qwen3AsrConfig.assistantTokenId))
 +        tokens.append(Int32(Qwen3AsrConfig.newlineTokenId))
++        if let language {
++            tokens.append(contentsOf: encodeText("language \(language.englishName)", vocabulary: vocabulary))
++            tokens.append(Int32(Qwen3AsrConfig.asrTextTokenId))
++        }
 +
 +        return tokens
 +    }
@@ -627,6 +642,38 @@ index 0000000..fdca84a
 +        var maxIdx: vDSP_Length = 0
 +        vDSP_maxvi(ptr, 1, &maxVal, &maxIdx, vDSP_Length(Qwen3AsrConfig.vocabSize))
 +        return Int(maxIdx)
++    }
++
++    // MARK: - Text Encoding
++
++    private static let byteToBpeUnicode: [UInt8: Character] = {
++        var out = [UInt8: Character]()
++        for (scalar, byte) in bpeUnicodeToByte { out[byte] = Character(Unicode.Scalar(scalar)!) }
++        return out
++    }()
++
++    private var tokenIdsByPiece: [String: Int32] = [:]
++
++    /// Byte-level BPE text to token ids by greedy longest match against the vocabulary. Not the
++    /// canonical BPE merge order, but every id is a real token and the text round-trips exactly,
++    /// which is all a short context prompt needs.
++    func encodeText(_ text: String, vocabulary: [Int: String]) -> [Int32] {
++        if tokenIdsByPiece.isEmpty {
++            for (id, piece) in vocabulary where tokenIdsByPiece[piece] == nil { tokenIdsByPiece[piece] = Int32(id) }
++        }
++        let chars = Array(text.utf8).compactMap { Self.byteToBpeUnicode[$0] }
++        var out: [Int32] = []
++        var i = 0
++        while i < chars.count {
++            var matched = false
++            for len in stride(from: min(24, chars.count - i), through: 1, by: -1) {
++                if let id = tokenIdsByPiece[String(chars[i..<i + len])] {
++                    out.append(id); i += len; matched = true; break
++                }
++            }
++            if !matched { i += 1 }   // unreachable for byte-level vocabularies; skip defensively
++        }
++        return out
 +    }
 +
 +    // MARK: - Text Decoding

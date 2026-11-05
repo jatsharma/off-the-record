@@ -64,6 +64,18 @@ final class AppDatabase {
                 t.uniqueKey(["meetingId", "speaker"])
             }
         }
+        m.registerMigration("v3-vocabulary") { db in
+            try db.alter(table: "segment") { t in
+                t.add(column: "rawText", .text)
+                t.add(column: "altText", .text)
+            }
+            try db.create(table: "screenText") { t in
+                t.primaryKey("id", .text)
+                t.belongsTo("meeting", onDelete: .cascade).notNull()
+                t.column("capturedAt", .datetime).notNull()
+                t.column("text", .text).notNull()
+            }
+        }
         return m
     }
 }

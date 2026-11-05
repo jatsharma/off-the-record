@@ -30,7 +30,8 @@ enum AppSettings {
     ## Summary
     Two or three sentences: what the meeting was about and what came out of it.
     ## Notes
-    Organized by topic. Keep the specifics: names, numbers, dates, reasons.
+    Organized by topic. Keep the specifics: names, numbers, dates, reasons. Name every system, \
+    product, database, library, service and tool that was discussed, with what was said about it.
     ## Decisions
     One line each.
     ## Action items
@@ -41,8 +42,8 @@ enum AppSettings {
     every specific from the Hindi parts: numbers, counts, distances, names of systems, who owns what.
     Prefer concrete statements ("two local servers per plaza, failover on crash") over generalities \
     ("the system is designed to be robust"). Never write an empty bullet or an empty checkbox; if there \
-    are no action items, omit the section.
-
+    are no action items, omit the section. Never write "[?]" or comment on transcript quality.
+    {{glossary}}
     Meeting: {{title}} on {{date}}
 
     Transcript:
@@ -74,8 +75,18 @@ enum Summarizer {
         }.joined(separator: "\n")
     }
 
-    static func buildPrompt(meeting: Meeting, segments: [Segment]) -> String {
-        AppSettings.prompt
+    /// The glossary goes where the template says {{glossary}}; templates saved before that
+    /// placeholder existed get it just above the transcript.
+    static func buildPrompt(meeting: Meeting, segments: [Segment], glossary: [String] = []) -> String {
+        let block = glossary.isEmpty ? "" : "\nWhen these names and terms come up in the transcript, spell them this way " +
+            "(most will not come up; never mention one the transcript does not): " + glossary.joined(separator: ", ") + "\n"
+        var template = AppSettings.prompt
+        if template.contains("{{glossary}}") {
+            template = template.replacingOccurrences(of: "{{glossary}}", with: block)
+        } else if !block.isEmpty, let range = template.range(of: "Transcript:") {
+            template.insert(contentsOf: block + "\n", at: range.lowerBound)
+        }
+        return template
             .replacingOccurrences(of: "{{title}}", with: meeting.title)
             .replacingOccurrences(of: "{{date}}", with: meeting.createdAt.formatted(date: .long, time: .shortened))
             .replacingOccurrences(of: "{{transcript}}", with: transcriptText(segments))
