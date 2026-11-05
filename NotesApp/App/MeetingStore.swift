@@ -142,8 +142,12 @@ final class MeetingStore: ObservableObject {
             fraction[meetingId] = nil
             try saveTranscript(result.lines, for: meetingId)
             saveSpeakerVectors(result.speakerVectors, for: meetingId)
+            applyCorrections(meetingId: meetingId)
+            var t = Date()
             if Vocabulary.cleanupEnabled { await cleanTranscript(meetingId: meetingId) }
+            NSLog("[timing] clean-up: %.1fs", Date().timeIntervalSince(t)); t = Date()
             await summarize(meetingId: meetingId)
+            NSLog("[timing] notes + title: %.1fs", Date().timeIntervalSince(t))
         } catch {
             fail(meetingId, error)
         }
@@ -172,8 +176,9 @@ final class MeetingStore: ObservableObject {
             progress[meetingId] = "Writing notes with \(model)"
             let prompt = Summarizer.buildPrompt(meeting: meeting, segments: segments, glossary: Vocabulary.terms(for: meetingId))
             var text = ""
+            // Temperature 0: the same transcript always gives the same notes, with fewer invented details.
             for try await token in client.chat(model: model, system: AppSettings.systemPrompt, user: prompt,
-                                               contextTokens: AppSettings.contextTokens) {
+                                               contextTokens: AppSettings.contextTokens, temperature: 0) {
                 text += token
                 liveSummary[meetingId] = text
             }
@@ -227,12 +232,29 @@ final class MeetingStore: ObservableObject {
         }
     }
 
+    /// Replaces mishearings learned from earlier hand corrections ("dixcheck" → "DexScreener").
+    /// Keeps the recognizer's text in `rawText`.
+    func applyCorrections(meetingId: String) {
+        guard !Vocabulary.corrections.isEmpty else { return }
+        try? db.pool.write { db in
+            for segment in try Segment.filter(Column("meetingId") == meetingId).fetchAll(db) {
+                let fixed = Vocabulary.applyCorrections(segment.text)
+                guard fixed != segment.text else { continue }
+                var s = segment
+                if s.rawText == nil { s.rawText = segment.text }
+                s.text = fixed
+                try s.update(db)
+            }
+        }
+    }
+
     /// A hand correction of one transcript line. New names and terms in it join the glossary, so
     /// later meetings are recognized and cleaned with them.
     func editSegment(_ segment: Segment, to text: String) {
         let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clean.isEmpty, clean != segment.text else { return }
         Vocabulary.learn(Vocabulary.newTerms(from: segment.text, to: clean))
+        Vocabulary.learnCorrections(from: segment.rawText ?? segment.text, to: clean)
         try? db.pool.write { db in
             var s = segment
             if s.rawText == nil { s.rawText = segment.text }

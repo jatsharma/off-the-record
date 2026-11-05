@@ -71,6 +71,31 @@ actor SpeechEngine {
 
     private var asr: AsrManager?
     private var diarizer: DiarizerManager?
+    private var offlineDiarizer: OfflineDiarizerManager?
+
+    /// "Who spoke when" for a whole recording. The offline pipeline (pyannote segmentation, WeSpeaker
+    /// embeddings, VBx clustering) sees the full recording at once; FluidAudio reports about 12%
+    /// diarization error for it against about 30% for the streaming DiarizerManager. Off by default:
+    /// on our test meetings it found one speaker more and switched speakers far more often, and
+    /// without knowing who was on those calls it is not clear which is right.
+    static let offlineDiarizerKey = "diarizer.offline"
+    static var useOfflineDiarizer: Bool { UserDefaults.standard.bool(forKey: offlineDiarizerKey) }
+
+    private func speakerSegments(_ samples: [Float]) async throws -> [TimedSpeakerSegment] {
+        if Self.useOfflineDiarizer {
+            if offlineDiarizer == nil {
+                // One speaker per moment: overlapping turns would be transcribed twice.
+                var config = OfflineDiarizerConfig.default
+                config.postProcessing.exclusiveSegments = true
+                let manager = OfflineDiarizerManager(config: config)
+                try await manager.prepareModels()
+                offlineDiarizer = manager
+            }
+            if let offlineDiarizer { return try await offlineDiarizer.process(audio: samples).segments }
+        }
+        guard let diarizer else { throw SpeechError.notLoaded }
+        return try diarizer.performCompleteDiarization(samples, sampleRate: 16_000).segments
+    }
     private var whisper: WhisperKit?
     private var whisperModelName: String?
     private var qwen3: Qwen3AsrManager?
@@ -84,7 +109,7 @@ actor SpeechEngine {
         case .whisper: whisper = nil; whisperModelName = nil
         case .qwen3: qwen3 = nil
         case .tara, .apex: if hinglishEngine == engine { hinglish = nil; hinglishEngine = nil }
-        case nil: asr = nil; whisper = nil; whisperModelName = nil; qwen3 = nil; hinglish = nil; hinglishEngine = nil; diarizer = nil
+        case nil: asr = nil; whisper = nil; whisperModelName = nil; qwen3 = nil; hinglish = nil; hinglishEngine = nil; diarizer = nil; offlineDiarizer = nil
         }
     }
 
@@ -133,7 +158,9 @@ actor SpeechEngine {
                     report: @escaping ProgressReport) async throws -> TranscriptResult {
         let engine = AppSettings.engine
         let status: @Sendable (String) -> Void = { report(nil, $0) }
+        var t = Date()
         try await prepare(engine: engine, status: status)
+        NSLog("[timing] load models: %.1fs", Date().timeIntervalSince(t)); t = Date()
         guard let diarizer else { throw SpeechError.notLoaded }
 
         status("Reading audio")
@@ -158,7 +185,7 @@ actor SpeechEngine {
             await asr.setWindowHandler(nil)
 
             report(0.92, "Identifying speakers")
-            let diar = (try? diarizer.performCompleteDiarization(call, sampleRate: 16_000).segments) ?? []
+            let diar = (try? await speakerSegments(call)) ?? []
             let (names, vectors) = Self.nameSpeakers(diar, knownVoices: knownVoices, singleLabel: "Them")
             let theirLines = Self.merge(pieces: Self.pieces(from: theirs), fullText: theirs.text, speakers: diar,
                                         duration: duration, names: names)
@@ -173,8 +200,11 @@ actor SpeechEngine {
             if channels.count == 2 {
                 let mic = Self.normalize(Self.suppressEcho(mic: channels[0], system: channels[1]))
                 let call = Self.normalize(channels[1])
+                t = Date()
+                defer { NSLog("[timing] call side (speakers + text): %.1fs", Date().timeIntervalSince(t)) }
                 let mine = try await transcribeByTurns(samples: mic, duration: duration, fixedSpeaker: "You",
                                                        knownVoices: [], context: context, status: status)
+                NSLog("[timing] your side (text): %.1fs", Date().timeIntervalSince(t)); t = Date()
                 let theirs = try await transcribeByTurns(samples: call, duration: duration, fixedSpeaker: nil,
                                                          knownVoices: knownVoices, singleLabel: "Them", context: context, status: status)
                 let lines = (mine.lines + theirs.lines).sorted { $0.start < $1.start }
@@ -233,7 +263,7 @@ actor SpeechEngine {
         report(0.92, "Identifying speakers")
         let speakers: [TimedSpeakerSegment]
         do {
-            speakers = try diarizer.performCompleteDiarization(samples, sampleRate: 16_000).segments
+            speakers = try await speakerSegments(samples)
         } catch {
             NSLog("Diarization failed, continuing without speakers: \(error)")
             speakers = []
@@ -341,7 +371,9 @@ actor SpeechEngine {
         var energyTurns: [(Double, Double)] = []
         if fixedSpeaker == nil {
             status("Identifying speakers")
-            segments = (try? diarizer.performCompleteDiarization(samples, sampleRate: 16_000).segments) ?? []
+            let td = Date()
+            segments = (try? await speakerSegments(samples)) ?? []
+            NSLog("[timing] speakers: %.1fs", Date().timeIntervalSince(td))
             (names, vectors) = Self.nameSpeakers(segments, knownVoices: knownVoices, singleLabel: singleLabel)
         } else {
             energyTurns = Self.speechRuns(samples)

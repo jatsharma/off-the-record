@@ -100,6 +100,7 @@ struct VocabularySettings: View {
     @AppStorage(Vocabulary.termsKey) private var terms = ""
     @AppStorage(Vocabulary.cleanupKey) private var cleanup = true
     @AppStorage(Vocabulary.screenKey) private var readScreen = true
+    @AppStorage(Vocabulary.correctionsKey) private var corrections = ""
 
     var body: some View {
         Form {
@@ -110,11 +111,20 @@ struct VocabularySettings: View {
             } header: {
                 Text("Names and terms your meetings use (\(Vocabulary.parse(terms).count))")
             } footer: {
-                Text("One per line, spelled the way you want them written: Solana, TimescaleDB, DexScreener, people's names. The recognizer is nudged toward them, the clean-up pass restores them where the sound matches, and the notes use these spellings. Words you type when correcting a transcript line are added here automatically. Keep the most important terms near the top: the recognizer only has room for about 40.")
+                Text("One per line, spelled the way you want them written: Solana, TimescaleDB, DexScreener, people's names. The clean-up pass restores them where the sound matches, and the notes use these spellings. Words you type when correcting a transcript line are added here automatically.")
+            }
+            Section {
+                TextEditor(text: $corrections)
+                    .font(.body.monospaced())
+                    .frame(minHeight: 90)
+            } header: {
+                Text("Learned corrections (\(Vocabulary.corrections.count))")
+            } footer: {
+                Text("What the recognizer heard → what it should be, e.g. \"dixcheck → DexScreener\". Added automatically when you correct a transcript line and replace a misheard name or term; applied to every new transcript. Delete a line to forget it.")
             }
             Section("Transcript") {
                 Toggle("Clean up the transcript with the notes model", isOn: $cleanup)
-                Text("After recognition, rewrites each line in romanized Hinglish and fixes misheard terms using this list. The recognizer's original text is kept on every changed line. Adds about a minute per 30 minutes of audio.")
+                Text("After recognition, fixes misheard terms using this list (romanized lines only get term fixes; Devanagari lines are also romanized). The recognizer's original text is kept on every changed line. Adds a few minutes per 30 minutes of audio.")
                     .font(.caption).foregroundStyle(.secondary)
                 Toggle("Read on-screen text while recording", isOn: $readScreen)
                 Text("Every 20 seconds during a recording, text on your screen (shared slides, code, dashboards) is read on this Mac and kept with the meeting, so names spelled there are recognized correctly. This app's own windows are skipped. Needs the Screen & System Audio Recording permission the app already uses.")
@@ -137,7 +147,7 @@ struct PromptSettings: View {
             } header: {
                 Text("What the model is asked to write")
             } footer: {
-                Text("Placeholders: {{title}}, {{date}}, {{glossary}}, {{transcript}}. A fixed system line also tells the model to stay inside the transcript and never invent.")
+                Text("Placeholders: {{title}}, {{date}}, {{days}} (what aaj, kal and parson mean for this meeting), {{glossary}}, {{transcript}}. A fixed system line also tells the model to stay inside the transcript and never invent.")
             }
             Section {
                 HStack {

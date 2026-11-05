@@ -33,11 +33,12 @@ enum AppSettings {
     Organized by topic. Keep the specifics: names, numbers, dates, reasons. Name every system, \
     product, database, library, service and tool that was discussed, with what was said about it.
     ## Decisions
-    One line each.
+    One line each, ending with the transcript time it was made, like [12:56].
     ## Action items
-    - [ ] what — who — when (only if said)
+    - [ ] what — who — when (only if said) [12:56]
 
     Speaker labels like "Speaker 1" are unknown names; keep them as they are.
+    {{days}}
     The transcript may mix Hindi (Devanagari) and English. Write the notes in English and carry over \
     every specific from the Hindi parts: numbers, counts, distances, names of systems, who owns what.
     Prefer concrete statements (who decided what, numbers, names, reasons) over generalities. Mention \
@@ -87,10 +88,30 @@ enum Summarizer {
         } else if !block.isEmpty, let range = template.range(of: "Transcript:") {
             template.insert(contentsOf: block + "\n", at: range.lowerBound)
         }
+        let days = relativeDays(from: meeting.createdAt)
+        if template.contains("{{days}}") {
+            template = template.replacingOccurrences(of: "{{days}}", with: days)
+        } else if let range = template.range(of: "Transcript:") {
+            template.insert(contentsOf: days + "\n\n", at: range.lowerBound)
+        }
         return template
             .replacingOccurrences(of: "{{title}}", with: meeting.title)
-            .replacingOccurrences(of: "{{date}}", with: meeting.createdAt.formatted(date: .long, time: .shortened))
+            .replacingOccurrences(of: "{{date}}", with: meeting.createdAt.formatted(
+                .dateTime.weekday(.wide).day().month(.wide).year().hour().minute()))
             .replacingOccurrences(of: "{{transcript}}", with: transcriptText(segments))
+    }
+
+    /// Hindi relative days resolved to dates, so the model never does calendar arithmetic (asked to,
+    /// small models get the weekday or the offset wrong). "kal" and "parson" point both ways.
+    static func relativeDays(from date: Date) -> String {
+        let cal = Calendar.current
+        func day(_ offset: Int) -> String {
+            (cal.date(byAdding: .day, value: offset, to: date) ?? date)
+                .formatted(.dateTime.weekday(.wide).day().month(.wide))
+        }
+        return "Relative days in the transcript: \"aaj\" = \(day(0)); \"kal\" = \(day(1)) for work still to do, " +
+            "\(day(-1)) for things already done; \"parson\" = \(day(2)) for work still to do, \(day(-2)) for " +
+            "things already done. In action items write the resolved day and date, never \"tomorrow\" or \"kal\"."
     }
 
     static func clock(_ seconds: Double) -> String {

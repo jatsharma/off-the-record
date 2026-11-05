@@ -10,6 +10,7 @@ enum Vocabulary {
     static let termsKey = "vocab.terms"
     static let cleanupKey = "vocab.cleanup"        // run the LLM clean-up pass (default on)
     static let screenKey = "vocab.readScreen"      // read on-screen text while recording (default on)
+    static let correctionsKey = "vocab.corrections" // "heard → wanted" lines learned from line edits
 
     static var cleanupEnabled: Bool { flag(cleanupKey, default: true) }
     static var readScreenEnabled: Bool { flag(screenKey, default: true) }
@@ -52,6 +53,83 @@ enum Vocabulary {
     static func recognizerContext(for meetingId: String) -> String? {
         let list = terms(for: meetingId).prefix(40)
         return list.isEmpty ? nil : list.joined(separator: ", ")
+    }
+
+    // MARK: Learned corrections
+
+    /// Recognizer mishearings and what they should be ("dixcheck → DexScreener"), one per line.
+    /// Learned when a transcript line is corrected; editable in Settings ▸ Vocabulary.
+    static var corrections: [(heard: String, wanted: String)] {
+        (UserDefaults.standard.string(forKey: correctionsKey) ?? "")
+            .components(separatedBy: .newlines)
+            .compactMap { line in
+                let arrow: String = line.contains("→") ? "→" : "->"
+                let parts: [String] = line.components(separatedBy: arrow)
+                guard parts.count == 2 else { return nil }
+                let heard = parts[0].trimmingCharacters(in: .whitespaces), wanted = parts[1].trimmingCharacters(in: .whitespaces)
+                return heard.isEmpty || wanted.isEmpty ? nil : (heard, wanted)
+            }
+    }
+
+    /// Records the misheard stretches a hand correction replaced with a name or term: up to three
+    /// words each side, where the new words contain a term ("desk screener" → "DexScreener").
+    /// Ordinary rewording is not learned.
+    static func learnCorrections(from old: String, to new: String) {
+        var pairs: [String] = []
+        for (heard, wanted) in wordDiff(words(old), words(new)) {
+            guard (1...3).contains(heard.count), (1...3).contains(wanted.count) else { continue }
+            let h = heard.joined(separator: " ").lowercased(), w = wanted.joined(separator: " ")
+            guard h.count >= 3, h != w.lowercased(),
+                  wanted.contains(where: { looksLikeTerm($0, strict: false) }) || manual.contains(where: { $0.lowercased() == w.lowercased() })
+            else { continue }
+            pairs.append("\(h) → \(w)")
+        }
+        guard !pairs.isEmpty else { return }
+        let existing = UserDefaults.standard.string(forKey: correctionsKey) ?? ""
+        let known = Set(corrections.map { $0.heard.lowercased() })
+        let added = pairs.filter { pair in !known.contains(pair.components(separatedBy: " → ")[0]) }
+        guard !added.isEmpty else { return }
+        let lines: [String] = existing.isEmpty ? added : [existing] + added
+        UserDefaults.standard.set(lines.joined(separator: "\n"), forKey: correctionsKey)
+    }
+
+    /// Applies the learned corrections to a line: whole words only, any case.
+    static func applyCorrections(_ text: String) -> String {
+        var out = text
+        for (heard, wanted) in corrections {
+            let body: String = heard.split(separator: " ").map { NSRegularExpression.escapedPattern(for: String($0)) }
+                .joined(separator: "\\s+")
+            let pattern: String = "(?<![\\p{L}\\p{N}])" + body + "(?![\\p{L}\\p{N}])"
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { continue }
+            out = regex.stringByReplacingMatches(in: out, range: NSRange(out.startIndex..., in: out),
+                                                 withTemplate: NSRegularExpression.escapedTemplate(for: wanted))
+        }
+        return out
+    }
+
+    /// Differing stretches between two word lists, aligned by longest common subsequence
+    /// (case and punctuation ignored).
+    static func wordDiff(_ a: [String], _ b: [String]) -> [([String], [String])] {
+        guard a.count <= 400, b.count <= 400 else { return [] }
+        let key: (String) -> String = { $0.lowercased().filter { $0.isLetter || $0.isNumber } }
+        let ka = a.map(key), kb = b.map(key)
+        var lcs = Array(repeating: Array(repeating: 0, count: kb.count + 1), count: ka.count + 1)
+        for i in stride(from: ka.count - 1, through: 0, by: -1) {
+            for j in stride(from: kb.count - 1, through: 0, by: -1) {
+                lcs[i][j] = ka[i] == kb[j] ? lcs[i + 1][j + 1] + 1 : max(lcs[i + 1][j], lcs[i][j + 1])
+            }
+        }
+        var gaps: [([String], [String])] = []
+        var gapA: [String] = [], gapB: [String] = []
+        var i = 0, j = 0
+        func flush() { if !gapA.isEmpty || !gapB.isEmpty { gaps.append((gapA, gapB)) }; gapA = []; gapB = [] }
+        while i < ka.count || j < kb.count {
+            if i < ka.count, j < kb.count, ka[i] == kb[j] { flush(); i += 1; j += 1 }
+            else if j < kb.count, (i == ka.count || lcs[i][j + 1] >= lcs[i + 1][j]) { gapB.append(b[j]); j += 1 }
+            else { gapA.append(a[i]); i += 1 }
+        }
+        flush()
+        return gaps
     }
 
     // MARK: Learning from edits
