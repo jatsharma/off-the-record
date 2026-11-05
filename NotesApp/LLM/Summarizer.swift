@@ -80,8 +80,16 @@ enum Summarizer {
     /// The glossary goes where the template says {{glossary}}; templates saved before that
     /// placeholder existed get it just above the transcript.
     static func buildPrompt(meeting: Meeting, segments: [Segment], glossary: [String] = []) -> String {
-        let block = glossary.isEmpty ? "" : "\nWhen these names and terms come up in the transcript, spell them this way " +
+        buildPrompt(meeting: meeting, transcript: transcriptText(segments), glossary: glossary)
+    }
+
+    static func glossaryBlock(_ glossary: [String]) -> String {
+        glossary.isEmpty ? "" : "\nWhen these names and terms come up in the transcript, spell them this way " +
             "(most will not come up; never mention one the transcript does not): " + glossary.joined(separator: ", ") + "\n"
+    }
+
+    static func buildPrompt(meeting: Meeting, transcript: String, glossary: [String] = []) -> String {
+        let block = glossaryBlock(glossary)
         var template = AppSettings.prompt
         if template.contains("{{glossary}}") {
             template = template.replacingOccurrences(of: "{{glossary}}", with: block)
@@ -98,7 +106,7 @@ enum Summarizer {
             .replacingOccurrences(of: "{{title}}", with: meeting.title)
             .replacingOccurrences(of: "{{date}}", with: meeting.createdAt.formatted(
                 .dateTime.weekday(.wide).day().month(.wide).year().hour().minute()))
-            .replacingOccurrences(of: "{{transcript}}", with: transcriptText(segments))
+            .replacingOccurrences(of: "{{transcript}}", with: transcript)
     }
 
     /// Hindi relative days resolved to dates, so the model never does calendar arithmetic (asked to,

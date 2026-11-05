@@ -26,6 +26,7 @@ struct GeneralSettings: View {
     @AppStorage(AppSettings.accentKey) private var accent = AccentTheme.ocean.rawValue
     @AppStorage(AppSettings.appearanceKey) private var appearance = Appearance.system.rawValue
     @AppStorage("captions.live") private var liveCaptions = true
+    @AppStorage(NotesPipeline.byPartsKey) private var notesByParts = false
 
     var body: some View {
         Form {
@@ -73,6 +74,9 @@ struct GeneralSettings: View {
                 TextField("Model", text: $model, prompt: Text(AppSettings.defaultModel))
                 TextField("Server URL", text: $url, prompt: Text(AppSettings.defaultURL))
                 Stepper("Context window: \(contextTokens) tokens", value: $contextTokens, in: 4096...131_072, step: 4096)
+                Toggle("Write long meetings part by part", isOn: $notesByParts)
+                Text("For meetings over 15 minutes: notes for each 8-minute part, then combined. Catches more points, but small models also make more mistakes this way, and it takes about four times as long.")
+                    .font(.caption).foregroundStyle(.secondary)
                 Text("qwen3.5:4b (3.3 GB download) needs about 4 GB of memory while writing and wrote the best notes of the light models in testing. gemma4:e4b (about 6.5 GB in memory) is a close alternative; gemma4:12b is a little more accurate but needs about 10 GB, which slows a 16 GB Mac. 32k tokens covers roughly a 90-minute meeting. Models that are not installed are pulled on first use.")
                     .font(.caption).foregroundStyle(.secondary)
             }

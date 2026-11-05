@@ -173,14 +173,48 @@ final class MeetingStore: ObservableObject {
             if try await !client.hasModel(model) {
                 try await client.pull(model) { [weak self] text in Task { @MainActor in self?.progress[meetingId] = text } }
             }
-            progress[meetingId] = "Writing notes with \(model)"
-            let prompt = Summarizer.buildPrompt(meeting: meeting, segments: segments, glossary: Vocabulary.terms(for: meetingId))
-            var text = ""
-            // Temperature 0: the same transcript always gives the same notes, with fewer invented details.
-            for try await token in client.chat(model: model, system: AppSettings.systemPrompt, user: prompt,
-                                               contextTokens: AppSettings.contextTokens, temperature: 0) {
-                text += token
-                liveSummary[meetingId] = text
+            let glossary = Vocabulary.terms(for: meetingId)
+            let turns = NotesPipeline.turns(segments)
+            let days = Summarizer.relativeDays(from: meeting.createdAt)
+            // Temperature 0 throughout: the same transcript always gives the same notes, with fewer
+            // invented details.
+            func ask(_ prompt: String, live: Bool) async throws -> String {
+                var text = ""
+                for try await token in client.chat(model: model, system: AppSettings.systemPrompt, user: prompt,
+                                                   contextTokens: AppSettings.contextTokens, temperature: 0) {
+                    text += token
+                    if live { liveSummary[meetingId] = text }
+                }
+                return text.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            var text: String
+            if NotesPipeline.byPartsEnabled, NotesPipeline.isLong(turns) {
+                let parts = NotesPipeline.parts(turns)
+                var partNotes: [(range: String, notes: String)] = []
+                for (i, part) in parts.enumerated() {
+                    progress[meetingId] = "Writing notes with \(model) (part \(i + 1) of \(parts.count))"
+                    fraction[meetingId] = Double(i) / Double(parts.count + 1)
+                    let notes = try await ask(NotesPipeline.partPrompt(part, index: i + 1, count: parts.count,
+                                                                       glossary: Summarizer.glossaryBlock(glossary), days: days), live: true)
+                    partNotes.append(("\(Summarizer.clock(part.first?.start ?? 0))–\(Summarizer.clock(part.last?.end ?? 0))", notes))
+                }
+                progress[meetingId] = "Combining the notes"
+                fraction[meetingId] = Double(parts.count) / Double(parts.count + 1)
+                let template = Summarizer.buildPrompt(meeting: meeting, transcript: "", glossary: glossary)
+                text = try await ask(NotesPipeline.combinePrompt(template: template, partNotes: partNotes), live: true)
+                fraction[meetingId] = nil
+            } else {
+                progress[meetingId] = "Writing notes with \(model)"
+                text = try await ask(Summarizer.buildPrompt(meeting: meeting, transcript: NotesPipeline.transcript(turns),
+                                                           glossary: glossary), live: true)
+            }
+            // Action items asked for on their own and checked against the transcript; on any failure
+            // the notes keep the items the notes model wrote.
+            progress[meetingId] = "Checking action items"
+            let speakers = Array(Set(turns.map(\.speaker))).sorted()
+            if let answer = try? await ask(NotesPipeline.actionPrompt(turns, speakers: speakers, days: days), live: false) {
+                let items = NotesPipeline.checkedItems(answer, turns: turns, speakers: Set(speakers), meetingDate: meeting.createdAt)
+                text = NotesPipeline.replaceActionItems(in: text, with: items)
             }
             let final = text.replacingOccurrences(of: " [?]", with: "").replacingOccurrences(of: "[?]", with: "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
