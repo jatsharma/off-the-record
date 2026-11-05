@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import AppKit
 import GRDB
 
 /// Orchestrates record -> transcribe -> summarize, and owns deletes.
@@ -20,6 +21,60 @@ final class MeetingStore: ObservableObject {
     @Published var liveSummary: [String: String] = [:]
 
     private let db = AppDatabase.shared
+
+    init() {
+        recoverInterrupted()
+    }
+
+    // MARK: Recovery
+
+    /// A meeting still recording, transcribing or summarizing at launch was cut off by a quit or
+    /// crash, and nothing will pick it up again. Mark it failed so the meeting page offers Retry.
+    /// A cut-off recording also gets its WAV header repaired, or it would read as 0 seconds.
+    private func recoverInterrupted() {
+        let others = NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "")
+            .filter { $0 != NSRunningApplication.current }
+        guard others.isEmpty else { return }   // another copy of the app may be working on them
+        let stuck = (try? db.pool.read { db in
+            try Meeting.filter([MeetingStatus.recording, .transcribing, .summarizing].map(\.rawValue).contains(Column("status"))).fetchAll(db)
+        }) ?? []
+        for meeting in stuck {
+            switch meeting.status {
+            case .recording:
+                var duration = meeting.durationSeconds
+                if let url = meeting.audioURL {
+                    WavRepair.fixHeader(url)
+                    if let file = try? AVAudioFile(forReading: url) { duration = Double(file.length) / file.processingFormat.sampleRate }
+                }
+                if duration < 2 { delete(meeting); continue }
+                update(meeting.id) {
+                    $0.durationSeconds = duration
+                    $0.status = .failed
+                    $0.errorMessage = "App closed mid-recording; audio kept"
+                }
+            default:
+                update(meeting.id) {
+                    $0.status = .failed
+                    $0.errorMessage = "App closed before this finished"
+                }
+            }
+        }
+    }
+
+    /// Called when the app quits mid-recording: the file is already closed by the recorder,
+    /// so keep it and let the user start transcription on the next launch.
+    func saveInterruptedRecording(_ meeting: Meeting, duration: TimeInterval) {
+        guard duration >= 2 else { delete(meeting); return }
+        update(meeting.id) {
+            $0.durationSeconds = duration
+            $0.status = .failed
+            $0.errorMessage = "Recording stopped when the app quit"
+        }
+    }
+
+    func meetingBeingRecorded() -> Meeting? {
+        try? db.pool.read { try Meeting.filter(Column("status") == MeetingStatus.recording.rawValue).order(Column("createdAt").desc).fetchOne($0) }
+    }
 
     // MARK: Recording
 

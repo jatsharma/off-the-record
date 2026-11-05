@@ -299,3 +299,46 @@ final class ChannelAligner {
         return (left, right)
     }
 }
+
+/// A WAV whose writer never closed (crash, force quit) keeps zero lengths in its header, so
+/// every reader sees 0 seconds although the samples are all there. Rewrites the RIFF and
+/// data chunk sizes from the file's real length.
+enum WavRepair {
+    /// Returns true when the header was rewritten.
+    @discardableResult
+    static func fixHeader(_ url: URL) -> Bool {
+        guard let handle = try? FileHandle(forUpdating: url) else { return false }
+        defer { try? handle.close() }
+        guard let fileSize = try? handle.seekToEnd(), fileSize > 44, fileSize < UInt64(UInt32.max) else { return false }
+        try? handle.seek(toOffset: 0)
+        guard let head = try? handle.read(upToCount: 4096), head.count >= 12,
+              head.prefix(4) == Data("RIFF".utf8), head[8..<12] == Data("WAVE".utf8) else { return false }
+
+        func u32(_ at: Int) -> UInt32 { head[at..<at + 4].enumerated().reduce(0) { $0 | UInt32($1.element) << (8 * $1.offset) } }
+        var offset = 12
+        var blockAlign: UInt64 = 1
+        while offset + 8 <= head.count {
+            let id = String(decoding: head[offset..<offset + 4], as: UTF8.self)
+            let size = Int(u32(offset + 4))
+            if id == "fmt ", offset + 22 <= head.count {
+                blockAlign = UInt64(max(1, Int(head[offset + 20]) | Int(head[offset + 21]) << 8))
+            }
+            if id == "data" {
+                let dataStart = UInt64(offset + 8)
+                let dataSize = (fileSize - dataStart) / blockAlign * blockAlign
+                guard UInt64(size) != dataSize else { return false }    // already correct
+                write(UInt32(dataSize), at: UInt64(offset + 4), to: handle)
+                write(UInt32(fileSize - 8), at: 4, to: handle)
+                return true
+            }
+            offset += 8 + size + (size & 1)
+        }
+        return false
+    }
+
+    private static func write(_ value: UInt32, at offset: UInt64, to handle: FileHandle) {
+        var le = value.littleEndian
+        try? handle.seek(toOffset: offset)
+        handle.write(Data(bytes: &le, count: 4))
+    }
+}

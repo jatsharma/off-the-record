@@ -2,8 +2,24 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 
+/// Finishes an in-progress recording before the app quits.
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    @MainActor static weak var recording: RecordingController?
+
+    @MainActor
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let recording = Self.recording, recording.isRecording else { return .terminateNow }
+        Task { @MainActor in
+            await recording.stopForQuit()
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
+}
+
 @main
 struct NotesApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var recorder: AudioRecorder
     @StateObject private var store: MeetingStore
     @StateObject private var recording: RecordingController
@@ -13,7 +29,9 @@ struct NotesApp: App {
         let store = MeetingStore.shared
         _recorder = StateObject(wrappedValue: recorder)
         _store = StateObject(wrappedValue: store)
-        _recording = StateObject(wrappedValue: RecordingController(recorder: recorder, store: store))
+        let recording = RecordingController(recorder: recorder, store: store)
+        _recording = StateObject(wrappedValue: recording)
+        AppDelegate.recording = recording
         Notifier.requestPermission()
     }
 

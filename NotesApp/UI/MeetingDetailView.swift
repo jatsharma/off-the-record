@@ -10,7 +10,8 @@ struct MeetingDetailView: View {
     @State private var tab: Tab = CommandLine.arguments.contains("--show-transcript") ? .transcript : .notes
     @State private var draftTitle = ""
     @State private var confirm: Confirm?
-    @State private var showPlayer = false
+    @State private var showPlayer = CommandLine.arguments.contains("--show-player")
+    @State private var followedSegment: String?
     @State private var editingNotes = false
     @State private var notesDraft = ""
     @State private var renaming: String?? = nil   // .some(speaker) while the popover is open
@@ -28,6 +29,13 @@ struct MeetingDetailView: View {
         if let meeting = observer.meeting {
             VStack(spacing: 0) {
                 header(meeting)
+                // The player sits above both tabs so "Listen" works from Notes too.
+                if showPlayer, meeting.audioURL != nil {
+                    Divider()
+                    PlayerBar(player: player, spaceToggles: !editingNotes && renaming == nil)
+                        .task { await player.load(meeting.audioURL) }
+                    Divider()
+                }
                 switch tab {
                 case .notes: notesTab(meeting)
                 case .transcript: transcriptTab(meeting)
@@ -107,6 +115,9 @@ struct MeetingDetailView: View {
                     if store.liveSummary[meeting.id] != nil {
                         HStack(spacing: 6) { ProgressView().controlSize(.mini); Text("Writing…").font(.caption).foregroundStyle(.secondary) }
                     }
+                } else if meeting.status == .failed {
+                    ContentUnavailableView("No notes yet", systemImage: "exclamationmark.triangle",
+                                           description: Text("Processing stopped. Use Retry above to continue."))
                 } else if meeting.status == .done {
                     ContentUnavailableView("No notes", systemImage: "doc.text",
                                            description: Text(observer.segments.isEmpty ? "There is no transcript to write notes from." : "Use Regenerate to write notes from the transcript."))
@@ -123,11 +134,6 @@ struct MeetingDetailView: View {
 
     private func transcriptTab(_ meeting: Meeting) -> some View {
         VStack(spacing: 0) {
-            if showPlayer, meeting.audioURL != nil {
-                PlayerBar(player: player)
-                    .task { await player.load(meeting.audioURL) }
-                Divider()
-            }
             if observer.segments.isEmpty {
                 ContentUnavailableView("No transcript", systemImage: "text.quote",
                                        description: Text(meeting.audioPath == nil ? "The audio was deleted, so this meeting cannot be transcribed again." : "Transcription has not produced any lines yet."))
@@ -149,7 +155,10 @@ struct MeetingDetailView: View {
                         .frame(maxWidth: 820, alignment: .leading)
                     }
                     .onChange(of: player.currentTime) { _, t in
-                        guard player.isPlaying, let current = observer.segments.first(where: { t >= $0.startTime && t < $0.endTime }) else { return }
+                        // Scroll only when the playhead enters a new line, so the reader can still scroll freely.
+                        guard player.isPlaying, let current = observer.segments.first(where: { t >= $0.startTime && t < $0.endTime }),
+                              current.id != followedSegment else { return }
+                        followedSegment = current.id
                         withAnimation { proxy.scrollTo(current.id, anchor: .center) }
                     }
                 }
@@ -351,6 +360,8 @@ struct PipelineStrip: View {
 
 struct PlayerBar: View {
     @ObservedObject var player: AudioPlayer
+    /// Off while a text field may want the space bar (editing notes, renaming a speaker).
+    var spaceToggles = true
 
     var body: some View {
         HStack(spacing: 12) {
@@ -361,7 +372,8 @@ struct PlayerBar: View {
                     Image(systemName: player.isPlaying ? "pause.fill" : "play.fill").font(.title3).frame(width: 24)
                 }
                 .buttonStyle(.plain)
-                .keyboardShortcut(.space, modifiers: [])
+                .keyboardShortcut(spaceToggles ? KeyboardShortcut(.space, modifiers: []) : nil)
+                .help(player.isLoaded ? "Play / pause (space)" : "This recording could not be opened")
                 .disabled(!player.isLoaded)
             }
             Text(Summarizer.clock(player.currentTime)).font(.caption.monospacedDigit()).frame(width: 44, alignment: .trailing)

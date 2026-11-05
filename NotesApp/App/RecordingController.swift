@@ -44,6 +44,17 @@ final class RecordingController: ObservableObject {
         captionTimer = nil
     }
 
+    /// Closes the WAV properly before the app exits; without this the file header is never
+    /// written and the recording reads as empty.
+    func stopForQuit() async {
+        guard recorder.isRecording else { return }
+        stopCaptions()
+        let duration = (try? await recorder.stop()) ?? 0
+        // `current` is nil when the recording was started outside this controller (--auto-record).
+        if let meeting = current ?? store.meetingBeingRecorded() { store.saveInterruptedRecording(meeting, duration: duration) }
+        current = nil
+    }
+
     func toggle() {
         guard !busy else { return }
         busy = true
