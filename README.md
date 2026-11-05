@@ -28,7 +28,7 @@ call, transcribes on the Neural Engine, writes notes with a local LLM. Nothing l
 ## Build and run
 
 ```bash
-make setup   # one-time: installs Ollama and pulls gemma4:e4b (about 6.6 GB)
+make setup   # one-time: installs Ollama and pulls qwen3.5:4b (about 3.3 GB)
 ```
 
 ```bash
@@ -116,7 +116,7 @@ restores it into the vendored copy and ports its downloader to the current API.
 
 ## Settings
 
-- **Model** – any Ollama tag. `gemma4:e4b` by default; `gemma4:e2b` if memory is tight.
+- **Model** – any Ollama tag. `qwen3.5:4b` by default (about 4 GB of memory); `gemma4:e4b` is a close alternative and `gemma4:12b` is slightly more accurate but needs about 10 GB.
 - **Context window** – 32k tokens by default, enough for roughly 90 minutes of speech.
 - **Notes prompt** – the user message sent to the model. Placeholders `{{title}}`, `{{date}}`, `{{transcript}}`.
 

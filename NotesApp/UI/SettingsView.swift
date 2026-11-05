@@ -73,7 +73,7 @@ struct GeneralSettings: View {
                 TextField("Model", text: $model, prompt: Text(AppSettings.defaultModel))
                 TextField("Server URL", text: $url, prompt: Text(AppSettings.defaultURL))
                 Stepper("Context window: \(contextTokens) tokens", value: $contextTokens, in: 4096...131_072, step: 4096)
-                Text("Gemma 4 e4b needs about 6 GB of memory while writing. 32k tokens covers roughly a 90-minute meeting. Models that are not installed are pulled on first use.")
+                Text("qwen3.5:4b (3.3 GB download) needs about 4 GB of memory while writing and wrote the best notes of the light models in testing. gemma4:e4b (about 6.5 GB in memory) is a close alternative; gemma4:12b is a little more accurate but needs about 10 GB, which slows a 16 GB Mac. 32k tokens covers roughly a 90-minute meeting. Models that are not installed are pulled on first use.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
@@ -84,8 +84,14 @@ struct GeneralSettings: View {
         switch ASREngine(rawValue: engine) ?? .parakeet {
         case .parakeet: return "Fastest and most accurate for English. Hindi comes out as English sounds. About 70 s per 30 minutes of audio."
         case .whisper: return "99 languages. Slower (about 7 minutes per 30 minutes of audio) and drops speech on mixed-language calls."
-        case .qwen3: return "Best of the three for Hinglish; uses your Vocabulary list. Hindi comes out in Devanagari and the clean-up pass romanizes it. Slow: about 20 minutes per 30 minutes of audio, transcribed in pieces of up to 15 seconds."
+        case .qwen3: return "Uses your Vocabulary list as a hint. Hindi comes out in Devanagari and the clean-up pass romanizes it. Slow: about 20 minutes per 30 minutes of audio."
+        case .tara: return "Whisper large-v3 tuned for Hinglish, Hindi in Devanagari and English terms in Latin script. Most accurate in Python tests, but on this Mac it runs at about real time (30 minutes per 30-minute call) and garbles some long Hindi stretches. Experimental." + installNote(.tara)
+        case .apex: return "Whisper turbo tuned for Hinglish. Writes romanized Hinglish with English terms spelled normally (\"postgres mein time scale daal denge\"). Best on technical Hinglish calls in testing; about 8 minutes per 30 minutes of audio." + installNote(.apex)
         }
+    }
+
+    private func installNote(_ engine: ASREngine) -> String {
+        HinglishWhisper.isInstalled(engine) ? "" : " Not installed yet: run `make hinglish-models` in the project folder."
     }
 }
 

@@ -4,16 +4,21 @@ import FluidAudio
 import WhisperKit
 
 enum ASREngine: String, CaseIterable, Identifiable {
-    case parakeet, whisper, qwen3
+    case parakeet, whisper, qwen3, tara, apex
     var id: String { rawValue }
     var label: String {
         switch self {
         case .parakeet: return "Parakeet v3 (fast, English + European)"
         case .whisper: return "Whisper large-v3-turbo (slower, 99 languages incl. Hindi)"
         case .qwen3: return "Qwen3-ASR 0.6B (30 languages incl. Hindi, experimental)"
+        case .tara: return "Tara (Hinglish, experimental: slow)"
+        case .apex: return "Apex (Hinglish, romanized, recommended)"
         }
     }
-    var takesLanguageHint: Bool { self != .parakeet }
+    /// Tara and Apex are Hindi–English models and always run in Hindi mode.
+    var takesLanguageHint: Bool { self == .whisper || self == .qwen3 }
+    /// Engines that read the audio one speaker turn at a time (they take at most 30 s per call).
+    var readsByTurns: Bool { self == .qwen3 || self == .tara || self == .apex }
 }
 
 /// One timed unit of recognized text: a Parakeet token or a Whisper word.
@@ -48,11 +53,13 @@ struct KnownVoice {
 typealias ProgressReport = @Sendable (_ fraction: Double?, _ status: String) -> Void
 
 enum SpeechError: LocalizedError {
-    case notLoaded, unreadableAudio
+    case notLoaded, unreadableAudio, modelMissing(ASREngine)
     var errorDescription: String? {
         switch self {
         case .notLoaded: return "Speech models are not loaded."
         case .unreadableAudio: return "Could not read the recording."
+        case .modelMissing(let engine):
+            return "\(engine.label) is not installed. Run `make hinglish-models` in the project folder, or pick another engine in Settings."
         }
     }
 }
@@ -67,6 +74,8 @@ actor SpeechEngine {
     private var whisper: WhisperKit?
     private var whisperModelName: String?
     private var qwen3: Qwen3AsrManager?
+    private var hinglish: WhisperKit?
+    private var hinglishEngine: ASREngine?
 
     /// Drops loaded models so the next use re-downloads and re-loads them (after a delete in Settings).
     func unload(_ engine: ASREngine?) {
@@ -74,7 +83,8 @@ actor SpeechEngine {
         case .parakeet: asr = nil
         case .whisper: whisper = nil; whisperModelName = nil
         case .qwen3: qwen3 = nil
-        case nil: asr = nil; whisper = nil; whisperModelName = nil; qwen3 = nil; diarizer = nil
+        case .tara, .apex: if hinglishEngine == engine { hinglish = nil; hinglishEngine = nil }
+        case nil: asr = nil; whisper = nil; whisperModelName = nil; qwen3 = nil; hinglish = nil; hinglishEngine = nil; diarizer = nil
         }
     }
 
@@ -86,6 +96,13 @@ actor SpeechEngine {
                 let manager = Qwen3AsrManager()
                 try await manager.loadModels(from: directory)
                 qwen3 = manager
+            }
+        } else if engine == .tara || engine == .apex {
+            if hinglish == nil || hinglishEngine != engine {
+                hinglish = nil
+                status("Loading \(engine == .tara ? "Tara" : "Apex") (the first load after an update takes a few minutes)")
+                hinglish = try await HinglishWhisper.load(engine)
+                hinglishEngine = engine
             }
         } else if engine == .whisper {
             let name = AppSettings.whisperModel
@@ -152,7 +169,7 @@ actor SpeechEngine {
         // Mono recording or imported file: mix channels and run the single-track pipeline.
         let samples = channels.count == 1 ? channels[0] : Self.mixDown(channels)
 
-        if engine == .qwen3 {
+        if engine.readsByTurns {
             if channels.count == 2 {
                 let mic = Self.normalize(Self.suppressEcho(mic: channels[0], system: channels[1]))
                 let call = Self.normalize(channels[1])
@@ -170,7 +187,7 @@ actor SpeechEngine {
         let pieces: [TimedPiece]
         let fullText: String
         switch engine {
-        case .qwen3:
+        case .qwen3, .tara, .apex:
             throw SpeechError.notLoaded   // handled above
         case .parakeet:
             guard let asr else { throw SpeechError.notLoaded }
@@ -316,7 +333,8 @@ actor SpeechEngine {
     private func transcribeByTurns(samples: [Float], duration: Double, fixedSpeaker: String?, knownVoices: [KnownVoice],
                                    singleLabel: String? = nil, context: String? = nil,
                                    status: @escaping @Sendable (String) -> Void) async throws -> TranscriptResult {
-        guard let diarizer, let qwen3 else { throw SpeechError.notLoaded }
+        let engine = AppSettings.engine
+        guard let diarizer else { throw SpeechError.notLoaded }
         var segments: [TimedSpeakerSegment] = []
         var names: [String: String] = [:]
         var vectors: [String: [Float]] = [:]
@@ -333,9 +351,11 @@ actor SpeechEngine {
         // that the diarizer did not label become unlabelled chunks so no speech is skipped.
         // Qwen3's decoder holds 512 tokens and audio takes 13 per second: a 25 s chunk left about
         // 170 tokens for text, so long Hindi turns came back cut off mid-sentence. 15 s leaves
-        // room for the glossary and about 200 tokens of text.
+        // room for the glossary and about 200 tokens of text. WhisperKit stops each read at 223
+        // tokens: Tara's Devanagari needs about 8 tokens a second (18 s pieces), Apex's romanized
+        // text about 5 (25 s).
         struct Chunk { var start: Double; var end: Double; var speaker: String? }
-        let maxLen = 15.0
+        let maxLen = engine == .qwen3 ? 15.0 : engine == .tara ? 18.0 : 25.0
         var chunks: [Chunk] = []
         var cursor = 0.0
         if let fixedSpeaker {
@@ -375,12 +395,23 @@ actor SpeechEngine {
 
         var lines: [TranscriptLine] = []
         let language = AppSettings.language
+        let name = engine == .qwen3 ? "Qwen3" : engine == .tara ? "Tara" : "Apex"
         for (i, c) in pieces.enumerated() where c.end - c.start >= 0.8 {
-            status("Transcribing with Qwen3 (\(i + 1)/\(pieces.count))")
+            status("Transcribing with \(name) (\(i + 1)/\(pieces.count))")
             let lo = max(0, Int((c.start - 0.2) * 16_000)), hi = min(samples.count, Int((c.end + 0.2) * 16_000))
             guard hi > lo else { continue }
             let chunk = Array(samples[lo..<hi])
             guard Self.voicedRatio(chunk) >= 0.25 else { continue }          // mostly silence: skip
+            if engine != .qwen3 {
+                // Tara and Apex spell English terms well on their own; a glossary prompt made Whisper
+                // insert terms that were not said, so they read the audio once, without one.
+                guard let hinglish, let raw = await HinglishWhisper.read(hinglish, Self.boost(chunk), engine: engine) else { continue }
+                let clean = Self.collapseRepeats(raw)
+                guard Self.matchesExpectedScripts(clean) else { continue }
+                lines.append(TranscriptLine(start: c.start, end: c.end, speaker: c.speaker, text: clean))
+                continue
+            }
+            guard let qwen3 else { throw SpeechError.notLoaded }
             // Two readings when there is a glossary: plain (faithful) and hinted (better spellings).
             let plain = await readQwen3(qwen3, chunk, language: language, context: nil)
             let hinted = context == nil ? nil : await readQwen3(qwen3, chunk, language: language, context: context)
@@ -532,14 +563,23 @@ actor SpeechEngine {
         return samples.map { max(-1, min(1, $0 * gain)) }
     }
 
+    /// Scales one piece so its peak sits at 90% of full scale (gain capped at 30x), the level the
+    /// Whisper fine-tunes were tested at.
+    static func boost(_ samples: [Float]) -> [Float] {
+        let peak = samples.reduce(Float(0)) { max($0, abs($1)) }
+        guard peak > 0 else { return samples }
+        let gain = min(30, 0.9 / peak)
+        return gain > 1.05 ? samples.map { max(-1, min(1, $0 * gain)) } : samples
+    }
+
     /// Autoregressive recognizers sometimes loop ("एक existing plaza हैं, और एक existing plaza हैं, ...").
-    /// Collapse any run of 1 to 6 words repeated three or more times in a row down to one copy.
+    /// Collapse any run of 1 to 12 words repeated three or more times in a row down to one copy.
     static func collapseRepeats(_ text: String) -> String {
         var words = text.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
         var i = 0
         while i < words.count {
             var collapsed = false
-            for n in 1...6 where i + 3 * n <= words.count {
+            for n in 1...12 where i + 3 * n <= words.count {
                 let unit = Array(words[i..<i + n])
                 var reps = 1
                 while i + (reps + 1) * n <= words.count, Array(words[i + reps * n..<i + (reps + 1) * n]) == unit { reps += 1 }

@@ -11,8 +11,13 @@ enum Vocabulary {
     static let cleanupKey = "vocab.cleanup"        // run the LLM clean-up pass (default on)
     static let screenKey = "vocab.readScreen"      // read on-screen text while recording (default on)
 
-    static var cleanupEnabled: Bool { UserDefaults.standard.object(forKey: cleanupKey) as? Bool ?? true }
-    static var readScreenEnabled: Bool { UserDefaults.standard.object(forKey: screenKey) as? Bool ?? true }
+    static var cleanupEnabled: Bool { flag(cleanupKey, default: true) }
+    static var readScreenEnabled: Bool { flag(screenKey, default: true) }
+
+    /// `bool(forKey:)` also understands "NO"/"YES" strings from launch arguments, which `as? Bool` does not.
+    private static func flag(_ key: String, default value: Bool) -> Bool {
+        UserDefaults.standard.object(forKey: key) == nil ? value : UserDefaults.standard.bool(forKey: key)
+    }
 
     /// The Settings list: one term per line (commas also separate).
     static var manual: [String] {

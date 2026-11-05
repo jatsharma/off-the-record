@@ -7,14 +7,14 @@ enum AppSettings {
     static let promptKey = "llm.basePrompt"
     static let contextKey = "llm.contextTokens"
 
-    static let engineKey = "asr.engine"            // "parakeet" | "whisper"
+    static let engineKey = "asr.engine"            // "parakeet" | "whisper" | "qwen3" | "tara" | "apex"
     static let whisperModelKey = "asr.whisperModel"
     static let languageKey = "asr.language"        // "" = auto-detect (Whisper only)
     static let scriptsKey = "asr.scripts"          // comma list of scripts the meetings may contain
     static let defaultScripts = "latin,devanagari"
 
     static let defaultWhisperModel = "openai_whisper-large-v3-v20240930_turbo"
-    static let defaultModel = "gemma4:e4b"
+    static let defaultModel = "qwen3.5:4b"
     static let defaultURL = "http://127.0.0.1:11434"
     static let defaultContextTokens = 32_768
 
@@ -40,8 +40,9 @@ enum AppSettings {
     Speaker labels like "Speaker 1" are unknown names; keep them as they are.
     The transcript may mix Hindi (Devanagari) and English. Write the notes in English and carry over \
     every specific from the Hindi parts: numbers, counts, distances, names of systems, who owns what.
-    Prefer concrete statements ("two local servers per plaza, failover on crash") over generalities \
-    ("the system is designed to be robust"). Never write an empty bullet or an empty checkbox; if there \
+    Prefer concrete statements (who decided what, numbers, names, reasons) over generalities. Mention \
+    only what the transcript says; do not list glossary terms or topics that did not come up. \
+    Never write an empty bullet or an empty checkbox; if there \
     are no action items, omit the section. Never write "[?]" or comment on transcript quality.
     {{glossary}}
     Meeting: {{title}} on {{date}}

@@ -81,6 +81,7 @@ struct OllamaClient {
                     request.httpBody = try JSONSerialization.data(withJSONObject: [
                         "model": model,
                         "stream": true,
+                        "think": false,     // reasoning models (qwen3.5) would otherwise think at length first
                         "messages": [
                             ["role": "system", "content": system],
                             ["role": "user", "content": user],

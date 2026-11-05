@@ -47,7 +47,21 @@ enum TranscriptCleaner {
                 let plainOnly = failing.map { Line(id: $0.id, speaker: $0.speaker, text: $0.text) }
                 result.merge(try await ask(plainOnly, context: [], glossary: [], client: client, model: model)) { $1 }
             }
-            for (id, text) in result where byId[id] != nil { out[id] = text }
+            for (id, text) in result {
+                guard let line = byId[id] else { continue }
+                if isLatin(line.text) {
+                    // Already romanized (Apex, Parakeet, Whisper): only glossary spellings may change.
+                    // Small models otherwise "fix" Hinglish ("beech beech mein" became "backend mein").
+                    let merged = termsOnly(original: line.text, cleaned: text, glossary: glossary)
+                    if merged != line.text { out[id] = merged }
+                } else {
+                    // Devanagari is rewritten whole, but never shortened: small models sometimes return
+                    // a fragment of a long line. Keep the original then.
+                    let before = line.text.split(whereSeparator: \.isWhitespace).count
+                    let after = text.split(whereSeparator: \.isWhitespace).count
+                    if Double(after) >= Double(before) * 0.7 { out[id] = text }
+                }
+            }
         }
         progress(1)
         return out
@@ -63,6 +77,59 @@ enum TranscriptCleaner {
             text += token
         }
         return parse(text, expected: Set(batch.map(\.id)))
+    }
+
+    /// Mostly Latin letters (romanized Hinglish or English).
+    static func isLatin(_ text: String) -> Bool {
+        var latin = 0, other = 0
+        for s in text.unicodeScalars where s.properties.isAlphabetic {
+            if s.value < 0x0250 { latin += 1 } else { other += 1 }
+        }
+        return latin > 0 && Double(other) / Double(latin + other) < 0.2
+    }
+
+    /// Keeps the original words except where the cleaned line put a glossary term in place of a
+    /// stretch of them ("desk screener" → "DexScreener", "post crash" → "Postgres"). Word lists are
+    /// aligned by longest common subsequence (case and punctuation ignored); a differing stretch is
+    /// taken from the cleaned line only if it contains a glossary term that sounds like the original.
+    static func termsOnly(original: String, cleaned: String, glossary: [String]) -> String {
+        let a = original.split(whereSeparator: \.isWhitespace).map(String.init)
+        let b = cleaned.split(whereSeparator: \.isWhitespace).map(String.init)
+        guard !a.isEmpty, !b.isEmpty, a.count <= 400, b.count <= 400 else { return original }
+        let key: (String) -> String = { $0.lowercased().filter { $0.isLetter || $0.isNumber } }
+        let ka = a.map(key), kb = b.map(key)
+        let terms = glossary.map { ($0, key($0)) }.filter { !$0.1.isEmpty }
+        var lcs = Array(repeating: Array(repeating: 0, count: kb.count + 1), count: ka.count + 1)
+        for i in stride(from: ka.count - 1, through: 0, by: -1) {
+            for j in stride(from: kb.count - 1, through: 0, by: -1) {
+                lcs[i][j] = ka[i] == kb[j] ? lcs[i + 1][j + 1] + 1 : max(lcs[i + 1][j], lcs[i][j + 1])
+            }
+        }
+        var out: [String] = []
+        var i = 0, j = 0
+        var gapA: [String] = [], gapB: [String] = []
+        func flush() {
+            // Take the cleaned words only if they hold a glossary term that sounds like the words
+            // they replace ("post crash" ~ Postgres), never for an inserted term or a "Solback" → Solana.
+            let joined = gapB.map(key).joined()
+            let heard = Phonetic.keys(of: gapA.joined(separator: " "))
+            let useCleaned = !gapA.isEmpty && !gapB.isEmpty && terms.contains { term, k in
+                joined.contains(k) && Phonetic.supports(term: term, heardKeys: heard)
+            }
+            out += useCleaned ? gapB : gapA
+            gapA = []; gapB = []
+        }
+        while i < ka.count || j < kb.count {
+            if i < ka.count, j < kb.count, ka[i] == kb[j] {
+                flush(); out.append(a[i]); i += 1; j += 1
+            } else if j < kb.count, (i == ka.count || lcs[i][j + 1] >= lcs[i + 1][j]) {
+                gapB.append(b[j]); j += 1
+            } else {
+                gapA.append(a[i]); i += 1
+            }
+        }
+        flush()
+        return out.joined(separator: " ")
     }
 
     /// True when every glossary term in `output` is backed by the plain reading (`line.text`), so it
@@ -234,7 +301,9 @@ enum Phonetic {
         "k": "K", "g": "K", "q": "K", "c": "K", "x": "K",
         "s": "S", "z": "S", "j": "S",
         "r": "R", "l": "R",
-        "m": "M", "n": "N", "y": "Y", "h": "H",
+        "m": "M", "n": "N", "y": "Y",
+        // A plain "h" is left out: in romanized Hindi it is mostly aspiration or a silent vowel
+        // marker ("solahna", "bhi", "kahna"), not a consonant the recognizer heard.
     ]
 
     private static let devanagari: [UInt32: Character] = {
