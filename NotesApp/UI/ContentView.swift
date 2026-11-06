@@ -132,9 +132,11 @@ struct ContentView: View {
             }
         }
         #if DEBUG
-        // Developer launch options (--auto-record, --import, --summarize, --screenshots); not in releases.
+        // Developer launch options (--auto-record, --import, --summarize, --screenshots, --diagnostics);
+        // not in releases.
         .task { await AutoRecord.run(recorder: recorder, store: store) { selection = $0 } }
         .task { await Screenshots.run(select: { selection = $0 }, openSettings: { openSettings() }) }
+        .task { await Diagnostics.writeIfAsked() }
         #endif
     }
 }

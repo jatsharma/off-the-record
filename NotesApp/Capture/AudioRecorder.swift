@@ -125,7 +125,7 @@ final class AudioRecorder: ObservableObject {
         timer = nil
         // Stopping fails when the stream already ended on its own; the file must still be closed,
         // or Stop would fail on every press and the recording would never be saved.
-        do { try await stream.stopCapture() } catch { NSLog("Stopping capture: \(error.localizedDescription)") }
+        do { try await stream.stopCapture() } catch { AppLog.write("Stopping capture: \(error.localizedDescription)") }
         let duration = sink.finish()
         self.stream = nil
         self.sink = nil
@@ -200,7 +200,7 @@ final class CaptureSink: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
-        NSLog("Capture stream stopped: \(error.localizedDescription)")
+        AppLog.write("Capture stream stopped: \(error.localizedDescription)")
         onStopped?(error)
     }
 
@@ -275,7 +275,7 @@ final class CaptureSink: NSObject, SCStreamOutput, SCStreamDelegate {
                 liveLock.unlock()
             }
         } catch {
-            NSLog("WAV write failed: \(error.localizedDescription)")
+            AppLog.write("WAV write failed: \(error.localizedDescription)")
         }
     }
 

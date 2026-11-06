@@ -33,7 +33,7 @@ enum TranscriptCleaner {
         let position = Dictionary(uniqueKeysWithValues: lines.enumerated().map { ($0.element.id, $0.offset) })
         // Only lines the pass could change go to the model; the rest would come back as they are.
         let todo = lines.filter { mayChange($0, glossary: glossary) }
-        NSLog("[clean-up] %d of %d lines can change", todo.count, lines.count)
+        AppLog.write(String(format: "[clean-up] %d of %d lines can change", todo.count, lines.count))
         let ask = { (batch: [Line], context: [Line], glossary: [String]) in
             try await Self.ask(batch, context: context, glossary: glossary, client: client, model: model, contextTokens: contextTokens)
         }

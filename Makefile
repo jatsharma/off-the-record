@@ -14,7 +14,7 @@ HARDENED = $(if $(findstring Developer ID,$(SIGN_ID)),YES,NO)
 # Passed as project variables so only the app target uses them (package bundles stay unsigned).
 SIGNING  = OTR_SIGN_ID="$(SIGN_ID)" OTR_HARDENED=$(HARDENED)
 
-.PHONY: gen build run clean setup deps hinglish-models release dmg notarize
+.PHONY: gen build run test clean setup deps hinglish-models release dmg notarize
 
 FLUIDAUDIO_TAG = v0.18.2
 
@@ -35,6 +35,11 @@ build: gen      ## Debug build (ad-hoc signed, personal use)
 
 run: build      ## Build and launch
 	open "$(APP_PATH)"
+
+test: gen       ## Unit tests (the app starts as a bare process: no windows, data or settings touched)
+	set -o pipefail; xcodebuild -project $(APP).xcodeproj -scheme $(SCHEME) -configuration Debug \
+	  -derivedDataPath $(DERIVED) -destination 'platform=macOS,arch=arm64' $(SIGNING) test 2>&1 \
+	  | grep -E "Test Case .*(passed|failed)|error:|Executed|\*\* TEST" | grep -v "\[Connection\]" | tail -60
 
 release: gen    ## Optimized build for distribution, signed with $(SIGN_ID)
 	@echo "Signing with: $(SIGN_ID)"

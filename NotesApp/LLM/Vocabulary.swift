@@ -9,21 +9,25 @@ import GRDB
 enum Vocabulary {
     static let termsKey = "vocab.terms"
     static let cleanupKey = "vocab.cleanup"        // run the LLM clean-up pass (default on)
-    static let screenKey = "vocab.readScreen"      // read on-screen text while recording (default on)
+    static let screenKey = "vocab.readScreen"      // read on-screen text while recording (opt-in, default off)
     static let correctionsKey = "vocab.corrections" // "heard → wanted" lines learned from line edits
     static let notesFixesKey = "vocab.notesFixes"   // "wrong → right" lines learned from notes edits
 
+    /// Where the glossary and the learned fixes are kept. Tests swap in a throwaway suite.
+    nonisolated(unsafe) static var defaults: UserDefaults = .standard
+
     static var cleanupEnabled: Bool { flag(cleanupKey, default: true) }
-    static var readScreenEnabled: Bool { flag(screenKey, default: true) }
+    /// Off until the user turns it on in setup or Settings ▸ Vocabulary.
+    static var readScreenEnabled: Bool { flag(screenKey, default: false) }
 
     /// `bool(forKey:)` also understands "NO"/"YES" strings from launch arguments, which `as? Bool` does not.
     private static func flag(_ key: String, default value: Bool) -> Bool {
-        UserDefaults.standard.object(forKey: key) == nil ? value : UserDefaults.standard.bool(forKey: key)
+        defaults.object(forKey: key) == nil ? value : defaults.bool(forKey: key)
     }
 
     /// The Settings list: one term per line (commas also separate).
     static var manual: [String] {
-        parse(UserDefaults.standard.string(forKey: termsKey) ?? "")
+        parse(defaults.string(forKey: termsKey) ?? "")
     }
 
     static func parse(_ raw: String) -> [String] {
@@ -38,7 +42,7 @@ enum Vocabulary {
         let known = Set(existing.map { $0.lowercased() })
         let added = unique(terms).filter { !known.contains($0.lowercased()) }
         guard !added.isEmpty else { return }
-        UserDefaults.standard.set((existing + added).joined(separator: "\n"), forKey: termsKey)
+        defaults.set((existing + added).joined(separator: "\n"), forKey: termsKey)
     }
 
     /// Terms for one meeting: this meeting's screen terms, then the Settings list.
@@ -63,7 +67,7 @@ enum Vocabulary {
     static var corrections: [(heard: String, wanted: String)] { pairs(forKey: correctionsKey) }
 
     private static func pairs(forKey key: String) -> [(heard: String, wanted: String)] {
-        (UserDefaults.standard.string(forKey: key) ?? "")
+        (defaults.string(forKey: key) ?? "")
             .components(separatedBy: .newlines)
             .compactMap { line in
                 let arrow: String = line.contains("→") ? "→" : "->"
@@ -88,12 +92,12 @@ enum Vocabulary {
             pairs.append("\(h) → \(w)")
         }
         guard !pairs.isEmpty else { return }
-        let existing = UserDefaults.standard.string(forKey: correctionsKey) ?? ""
+        let existing = defaults.string(forKey: correctionsKey) ?? ""
         let known = Set(corrections.map { $0.heard.lowercased() })
         let added = pairs.filter { pair in !known.contains(pair.components(separatedBy: " → ")[0]) }
         guard !added.isEmpty else { return }
         let lines: [String] = existing.isEmpty ? added : [existing] + added
-        UserDefaults.standard.set(lines.joined(separator: "\n"), forKey: correctionsKey)
+        defaults.set(lines.joined(separator: "\n"), forKey: correctionsKey)
     }
 
     /// Applies the learned corrections to a line: whole words only, any case.
@@ -179,9 +183,9 @@ enum Vocabulary {
         guard !lesson.isEmpty else { return lesson }
         learn(lesson.terms)
         if !lesson.fixes.isEmpty {
-            let existing = UserDefaults.standard.string(forKey: notesFixesKey) ?? ""
+            let existing = defaults.string(forKey: notesFixesKey) ?? ""
             let added = lesson.fixes.map { "\($0.heard) → \($0.wanted)" }
-            UserDefaults.standard.set((existing.isEmpty ? added : [existing] + added).joined(separator: "\n"), forKey: notesFixesKey)
+            defaults.set((existing.isEmpty ? added : [existing] + added).joined(separator: "\n"), forKey: notesFixesKey)
         }
         return lesson
     }
@@ -189,11 +193,11 @@ enum Vocabulary {
     /// Takes back what one edit taught (the banner's Undo).
     static func forget(_ lesson: NotesLesson) {
         let terms = Set(lesson.terms.map { $0.lowercased() })
-        UserDefaults.standard.set(manual.filter { !terms.contains($0.lowercased()) }.joined(separator: "\n"), forKey: termsKey)
+        defaults.set(manual.filter { !terms.contains($0.lowercased()) }.joined(separator: "\n"), forKey: termsKey)
         let fixes = Set(lesson.fixes.map(\.heard))
-        let kept = (UserDefaults.standard.string(forKey: notesFixesKey) ?? "").components(separatedBy: .newlines)
+        let kept = (defaults.string(forKey: notesFixesKey) ?? "").components(separatedBy: .newlines)
             .filter { line in !fixes.contains(where: { line.lowercased().hasPrefix($0 + " →") || line.lowercased().hasPrefix($0 + " ->") }) }
-        UserDefaults.standard.set(kept.joined(separator: "\n"), forKey: notesFixesKey)
+        defaults.set(kept.joined(separator: "\n"), forKey: notesFixesKey)
     }
 
     /// The fixes as a hint block for the notes prompt.

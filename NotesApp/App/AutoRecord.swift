@@ -40,12 +40,12 @@ enum AutoRecord {
                 var last = -1
                 try await HinglishWhisper.download(model) { f in
                     let p = Int(f * 100)
-                    if p / 10 != last / 10 { last = p; NSLog("[download] %@ %d%%", model.rawValue, p) }
+                    if p / 10 != last / 10 { last = p; AppLog.write(String(format: "[download] %@ %d%%", model.rawValue, p)) }
                 }
-                NSLog("[download] %@ done in %.0fs: installed=%d at %@", model.rawValue, Date().timeIntervalSince(started),
-                      HinglishWhisper.isInstalled(model) ? 1 : 0, HinglishWhisper.folder(for: model)?.path ?? "-")
+                AppLog.write(String(format: "[download] %@ done in %.0fs: installed=%d at %@", model.rawValue, Date().timeIntervalSince(started),
+                      HinglishWhisper.isInstalled(model) ? 1 : 0, HinglishWhisper.folder(for: model)?.path ?? "-"))
             } catch {
-                NSLog("[download] %@ failed: %@", model.rawValue, error.localizedDescription)
+                AppLog.write(String(format: "[download] %@ failed: %@", model.rawValue, error.localizedDescription))
             }
         }
         if let id = summarizeId {
@@ -57,7 +57,7 @@ enum AutoRecord {
                 let meeting = try store.importAudio(from: URL(fileURLWithPath: path))
                 select(meeting.id)
             } catch {
-                NSLog("Import failed: \(error.localizedDescription)")
+                AppLog.write("Import failed: \(error.localizedDescription)")
             }
         }
         guard let seconds = requestedSeconds else { return }
@@ -65,14 +65,14 @@ enum AutoRecord {
             try await Task.sleep(for: .seconds(1))
             let meeting = try store.createMeeting(title: "Auto test \(Date().formatted(date: .omitted, time: .standard))")
             try await recorder.start(to: meeting.audioURL!)
-            NSLog("AutoRecord: recording \(meeting.id) for \(Int(seconds))s")
+            AppLog.write("AutoRecord: recording \(meeting.id) for \(Int(seconds))s")
             try await Task.sleep(for: .seconds(seconds))
             let duration = try await recorder.stop()
-            NSLog("AutoRecord: stopped after \(duration)s")
+            AppLog.write("AutoRecord: stopped after \(duration)s")
             store.finishRecording(meeting, duration: duration)
             select(meeting.id)
         } catch {
-            NSLog("AutoRecord failed: \(error.localizedDescription)")
+            AppLog.write("AutoRecord failed: \(error.localizedDescription)")
         }
     }
 }

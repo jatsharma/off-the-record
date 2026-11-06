@@ -21,7 +21,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+/// Starts the app. Under unit tests it starts only a bare process for the tests to run in: no
+/// windows, no meetings database, no Ollama, and the user's settings are left alone.
 @main
+enum Launcher {
+    static var isTesting: Bool {
+        let env = ProcessInfo.processInfo.environment
+        return env["XCTestConfigurationFilePath"] != nil || env["XCTestSessionIdentifier"] != nil
+    }
+
+    static func main() {
+        if isTesting {
+            let app = NSApplication.shared
+            app.setActivationPolicy(.prohibited)
+            app.run()
+        } else {
+            NotesApp.main()
+        }
+    }
+}
+
 struct NotesApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var recorder: AudioRecorder
@@ -30,6 +49,8 @@ struct NotesApp: App {
 
     init() {
         LegacyData.migrate()
+        let info = Bundle.main.infoDictionary ?? [:]
+        AppLog.write("Off the Record \(info["CFBundleShortVersionString"] ?? "?") (\(info["CFBundleVersion"] ?? "?")) started on macOS \(ProcessInfo.processInfo.operatingSystemVersionString)")
         let recorder = AudioRecorder()
         let store = MeetingStore.shared
         _recorder = StateObject(wrappedValue: recorder)

@@ -51,7 +51,7 @@ enum Screenshots {
                 }
             }
         }
-        NSLog("Screenshots written to \(dir.path)")
+        AppLog.write("Screenshots written to \(dir.path)")
         NSApp.terminate(nil)
     }
 
@@ -72,7 +72,7 @@ enum Screenshots {
         do {
             let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
             guard let scWindow = content.windows.first(where: { $0.windowID == CGWindowID(window.windowNumber) }) else {
-                NSLog("Screenshots: window \(window.windowNumber) not in shareable content"); return
+                AppLog.write("Screenshots: window \(window.windowNumber) not in shareable content"); return
             }
             let filter = SCContentFilter(desktopIndependentWindow: scWindow)
             let config = SCStreamConfiguration()
@@ -86,7 +86,7 @@ enum Screenshots {
             guard let data = rep.representation(using: .png, properties: [:]) else { return }
             try data.write(to: url)
         } catch {
-            NSLog("Screenshots: capture failed: \(error.localizedDescription)")
+            AppLog.write("Screenshots: capture failed: \(error.localizedDescription)")
         }
     }
 }

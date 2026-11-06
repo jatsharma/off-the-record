@@ -68,3 +68,25 @@ targets:
         GENERATE_INFOPLIST_FILE: NO
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ENABLE_PREVIEWS: YES
+    scheme:
+      testTargets:
+        - NotesAppTests
+  NotesAppTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: Tests/NotesAppTests
+    dependencies:
+      - target: NotesApp
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.stackera.offtherecord.tests
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: "5.0"
+        MACOSX_DEPLOYMENT_TARGET: "15.0"
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Off the Record.app/Contents/MacOS/Off the Record"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+        # Loaded into the app, which has library validation off; ad-hoc is enough.
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGN_STYLE: Manual
+        DEVELOPMENT_TEAM: ""

@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// First-run setup: what language the meetings are in (which picks the speech engine), the two
-/// permissions, and every download with its size, checked against free disk space and memory, in
+/// permissions, the opt-in screen reading, and every download with its size, checked against free disk space and memory, in
 /// one click. Reopen any time from Help › Setup Assistant.
 struct SetupView: View {
     @EnvironmentObject private var store: MeetingStore
@@ -14,6 +14,7 @@ struct SetupView: View {
     @State private var items: [Item.ID: ItemState] = [:]
     @State private var running = false
     @State private var freeBytes: Int64?
+    @AppStorage(Vocabulary.screenKey) private var readScreen = false
 
     enum StepState { case idle, working, done, failed }
 
@@ -95,6 +96,14 @@ struct SetupView: View {
                                     }
                                 }
                             }
+                        }
+                    }
+                    section("Optional") {
+                        step(icon: "text.viewfinder", title: "Read text on screen during recordings",
+                             detail: ScreenReader.explanation + " Change it any time in Settings ▸ Vocabulary.",
+                             state: .idle) {
+                            Toggle("Read text on screen during recordings", isOn: $readScreen)
+                                .toggleStyle(.switch).labelsHidden()
                         }
                     }
                     section("Downloads") {

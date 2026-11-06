@@ -1,0 +1,44 @@
+name: Build and test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use the newest Xcode 26
+        run: |
+          xcode=$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)
+          sudo xcode-select -s "$xcode"
+          xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Cache Swift packages
+        uses: actions/cache@v4
+        with:
+          path: build/SourcePackages
+          key: spm-${{ runner.os }}-${{ hashFiles('project.yml', 'Makefile') }}
+          restore-keys: spm-${{ runner.os }}-
+
+      # No signing certificate on the runner: builds are ad-hoc signed.
+      - name: Unit tests
+        run: make test SIGN_ID=-
+
+      - name: Release build
+        run: make release SIGN_ID=-

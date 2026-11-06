@@ -61,6 +61,7 @@ final class RecordingController: ObservableObject {
         stopCaptions()
         screenReader.stop()
         let duration = (try? await recorder.stop()) ?? 0
+        AppLog.write("Recording saved on quit after \(Int(duration))s")
         // `current` is nil when the recording was started outside this controller (--auto-record).
         if let meeting = current ?? store.meetingBeingRecorded() { store.saveInterruptedRecording(meeting, duration: duration) }
         current = nil
@@ -77,6 +78,7 @@ final class RecordingController: ObservableObject {
                     stopCaptions()
                     screenReader.stop()
                     let duration = try await recorder.stop()
+                    AppLog.write("Recording stopped after \(Int(duration))s")
                     if let meeting = current {
                         store.saveTypedNotes(meeting.id, typedNotes)
                         typedNotes = ""
@@ -98,9 +100,11 @@ final class RecordingController: ObservableObject {
                     try await recorder.start(to: meeting.audioURL!, liveSamples: captions)
                     screenReader.start(meetingId: meeting.id)
                     if captions { startCaptions() }
+                    AppLog.write("Recording \(meeting.id) started (screen reading \(Vocabulary.readScreenEnabled ? "on" : "off"), live captions \(captions ? "on" : "off"))")
                 }
             } catch {
                 self.error = error.localizedDescription
+                AppLog.write("Recording failed: \(error.localizedDescription)")
                 if let meeting = current, !recorder.isRecording {
                     screenReader.stop()
                     store.discardRecording(meeting)

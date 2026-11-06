@@ -135,7 +135,7 @@ struct GeneralSettings: View {
 struct VocabularySettings: View {
     @AppStorage(Vocabulary.termsKey) private var terms = ""
     @AppStorage(Vocabulary.cleanupKey) private var cleanup = true
-    @AppStorage(Vocabulary.screenKey) private var readScreen = true
+    @AppStorage(Vocabulary.screenKey) private var readScreen = false
     @AppStorage(Vocabulary.correctionsKey) private var corrections = ""
     @AppStorage(Vocabulary.notesFixesKey) private var notesFixes = ""
 
@@ -173,7 +173,7 @@ struct VocabularySettings: View {
                 Text("After recognition, fixes misheard terms using this list (romanized lines only get term fixes; Devanagari lines are also romanized). The recognizer's original text is kept on every changed line. Adds a few minutes per 30 minutes of audio.")
                     .font(.caption).foregroundStyle(.secondary)
                 Toggle("Read on-screen text while recording", isOn: $readScreen)
-                Text("Every 20 seconds during a recording, text on your screen (shared slides, code, dashboards) is read on this Mac and kept with the meeting, so names spelled there are recognized correctly. This app's own windows are skipped. Needs the Screen & System Audio Recording permission the app already uses.")
+                Text(ScreenReader.explanation + " This app's own windows are skipped. Off unless you turn it on; uses the Screen & System Audio Recording permission.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }

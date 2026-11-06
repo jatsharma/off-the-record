@@ -100,7 +100,7 @@ enum PlaybackMix {
             return mixURL
         } catch {
             try? FileManager.default.removeItem(at: mixURL)
-            NSLog("Playback mix failed, playing the original: \(error.localizedDescription)")
+            AppLog.write("Playback mix failed, playing the original: \(error.localizedDescription)")
             return url
         }
     }

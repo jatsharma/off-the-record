@@ -189,7 +189,7 @@ actor SpeechEngine {
         let status: @Sendable (String) -> Void = { report(nil, $0) }
         var t = Date()
         try await prepare(engine: engine, report: report)
-        NSLog("[timing] load models: %.1fs", Date().timeIntervalSince(t)); t = Date()
+        AppLog.write(String(format: "[timing] load models: %.1fs", Date().timeIntervalSince(t))); t = Date()
         guard let diarizer else { throw SpeechError.notLoaded }
 
         status("Reading audio")
@@ -224,10 +224,10 @@ actor SpeechEngine {
         if engine.readsByTurns, channels.count == 2 {
             let (mic, call) = Self.sides(&channels)
             t = Date()
-            defer { NSLog("[timing] call side (speakers + text): %.1fs", Date().timeIntervalSince(t)) }
+            defer { AppLog.write(String(format: "[timing] call side (speakers + text): %.1fs", Date().timeIntervalSince(t))) }
             let mine = try await transcribeByTurns(samples: mic, duration: duration, fixedSpeaker: "You",
                                                    knownVoices: [], context: context, status: status)
-            NSLog("[timing] your side (text): %.1fs", Date().timeIntervalSince(t)); t = Date()
+            AppLog.write(String(format: "[timing] your side (text): %.1fs", Date().timeIntervalSince(t))); t = Date()
             let theirs = try await transcribeByTurns(samples: call, duration: duration, fixedSpeaker: nil,
                                                      knownVoices: knownVoices, singleLabel: "Them", context: context, status: status)
             let lines = (mine.lines + theirs.lines).sorted { $0.start < $1.start }
@@ -296,7 +296,7 @@ actor SpeechEngine {
         do {
             speakers = try await speakerSegments(samples)
         } catch {
-            NSLog("Diarization failed, continuing without speakers: \(error)")
+            AppLog.write("Diarization failed, continuing without speakers: \(error)")
             speakers = []
         }
         let (names, vectors) = Self.nameSpeakers(speakers, knownVoices: knownVoices, singleLabel: nil)
@@ -444,7 +444,7 @@ actor SpeechEngine {
             status("Identifying speakers")
             let td = Date()
             segments = (try? await speakerSegments(samples)) ?? []
-            NSLog("[timing] speakers: %.1fs", Date().timeIntervalSince(td))
+            AppLog.write(String(format: "[timing] speakers: %.1fs", Date().timeIntervalSince(td)))
             (names, vectors) = Self.nameSpeakers(segments, knownVoices: knownVoices, singleLabel: singleLabel)
         } else {
             energyTurns = Self.speechRuns(samples)

@@ -28,6 +28,7 @@ Meetings are processed one at a time; others wait in line.
 | Recordings | `~/Library/Application Support/Off the Record/Audio/<meeting id>.wav` (two channels, about 230 MB per hour) |
 | Speech models | `~/Library/Application Support/FluidAudio/Models` |
 | Ollama runtime (if downloaded) | `~/Library/Application Support/Off the Record/Runtime/ollama` |
+| App log (no meeting content; the last lines go into Help → Copy Diagnostics) | `~/Library/Application Support/Off the Record/Logs/app.log` |
 | Hinglish models | `~/Library/Application Support/Off the Record/Models/hinglish` |
 | LLM weights | `~/.ollama/models` |
 
@@ -37,7 +38,8 @@ Meetings are processed one at a time; others wait in line.
 NotesApp/
   App/       NotesApp.swift (entry, menus, menu bar), LegacyData (move data from the old "Meeting Notes"),
              MeetingStore.swift (job queue, pipeline, deletes, voices, action items), RecordingController (start/stop/pause, live captions), ModelCatalog,
-             Permissions, AudioPlayer, Notifier, GlobalHotKey, AutoRecord/Screenshots (dev hooks)
+             Permissions, AudioPlayer, Notifier, GlobalHotKey, AutoRecord/Screenshots (dev hooks),
+             AppLog (log file for Copy Diagnostics), Diagnostics
   Capture/   AudioRecorder.swift (ScreenCaptureKit mic + system audio, two-channel aligner, WAV writer),
              ScreenReader.swift (on-screen text for the glossary)
   Speech/    SpeechEngine.swift (Parakeet/Mix, advanced: Apex/Tara/Whisper, diarization, echo gate, voice matching),
@@ -49,7 +51,9 @@ NotesApp/
   Store/     Database.swift (GRDB, migrations), Models.swift (Meeting, Segment)
   UI/        ContentView (sidebar), NotesView (notes edited in place), RecordView, MeetingDetailView, ActionItemsView, SetupView,
              SettingsView (General, Prompt, Models, Storage, Voices), Theme, Observers
-project.yml  XcodeGen spec; Makefile wraps gen/build/run/setup
+Tests/NotesAppTests/  unit tests (notes lines, word fixes, action items, echo gate)
+project.yml  XcodeGen spec; Makefile wraps gen/build/run/test/setup
+.github/workflows/build.yml  tests and a Release build on every push and pull request
 ```
 
 ## Speech engines
@@ -100,6 +104,7 @@ you talking over the other side is kept.
   `{{glossary}}`. The transcript always goes first, ahead of the instructions; the action-item step
   starts with the same text, so Ollama reuses that work (27 s of prompt processing down to 0.2 s on a
   32-minute meeting).
-- **Read the screen** – on by default: while recording, the screen's text is read every 20 s (only when
-  the screen changed) and its names and terms join the glossary. The clean-up pass only sends lines
-  that hold a word sounding like a glossary term.
+- **Read the screen** – off by default; turn it on during setup or in Settings → Vocabulary. While
+  recording, the screen's text is read every 20 s (only when the screen changed) and its names and
+  terms join the glossary. The clean-up pass only sends lines that hold a word sounding like a
+  glossary term.

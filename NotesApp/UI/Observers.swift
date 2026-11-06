@@ -11,7 +11,7 @@ final class MeetingsObserver: ObservableObject {
         cancellable = ValueObservation
             .tracking { db in try Meeting.order(Column("createdAt").desc).fetchAll(db) }
             .start(in: AppDatabase.shared.pool, scheduling: .immediate,
-                   onError: { NSLog("meetings observation failed: \($0)") },
+                   onError: { AppLog.write("meetings observation failed: \($0)") },
                    onChange: { [weak self] in self?.items = $0 })
     }
 }
@@ -31,7 +31,7 @@ final class MeetingObserver: ObservableObject {
                 return (meeting, segments)
             }
             .start(in: AppDatabase.shared.pool, scheduling: .immediate,
-                   onError: { NSLog("meeting observation failed: \($0)") },
+                   onError: { AppLog.write("meeting observation failed: \($0)") },
                    onChange: { [weak self] in self?.meeting = $0.0; self?.segments = $0.1 })
     }
 }

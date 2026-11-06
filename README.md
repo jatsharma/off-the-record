@@ -69,7 +69,8 @@
    click **Done**, open **System Settings → Privacy & Security**, scroll down and click **Open Anyway**
    next to Off the Record. You do this once; later versions open normally.
 3. The setup assistant asks what language your meetings are in, gets the microphone and system-audio
-   permissions, and downloads what it needs, once:
+   permissions, lets you turn on screen reading (optional, off by default), and downloads what it
+   needs, once:
 
 | Download | Size | When |
 | --- | --- | --- |
@@ -86,9 +87,9 @@ lighter notes model.
 - Everything is processed on your Mac: recording, transcription, speaker separation and the notes.
 - Network use is limited to downloading models from Hugging Face, the Ollama runtime from GitHub and the
   notes model from the Ollama registry. Nothing is uploaded.
-- While recording, the app can read text on your screen every 20 seconds (only when the screen changed)
-  so names on shared slides are spelled correctly. The text stays with the meeting on your Mac; turn it
-  off in Settings → Vocabulary.
+- Optional, off by default: while recording, the app can read text on your screen every 20 seconds
+  (only when the screen changed) so names on shared slides are spelled correctly. The text stays with
+  the meeting on your Mac. Turn it on during setup or in Settings → Vocabulary.
 - Your data lives in `~/Library/Application Support/Off the Record`: one SQLite database and one audio
   file per meeting. Delete a meeting, its audio or its transcript at any time; Settings → Storage
   clears the audio of older meetings in one click.
@@ -112,11 +113,16 @@ Needs Xcode 26 and [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`brew inst
 git clone https://github.com/jatsharma/off-the-record.git
 cd off-the-record
 make run        # fetches FluidAudio, generates the Xcode project, builds and opens the app
+make test       # unit tests
 ```
 
 `make gen` generates `NotesApp.xcodeproj` to open in Xcode. Debug builds accept developer launch
 options: `--import <file>`, `--auto-record <seconds>`, `--summarize <meeting id>`,
-`--download-model apex`, `--screenshots <folder>`.
+`--download-model apex`, `--screenshots <folder>`, `--diagnostics <file>`.
+
+The unit tests cover the notes line parser, word-fix learning, the action-item checks and the echo
+gate. They run inside the app as a bare process, so your meetings and settings are not touched.
+GitHub Actions runs them and a Release build on every push and pull request.
 
 **Signing.** macOS ties the microphone and system-audio permissions to the app's signature, so ad-hoc
 builds have to be allowed again after every build. Create a local signing certificate once:

@@ -179,6 +179,7 @@ final class MeetingStore: ObservableObject {
     func process(meetingId: String) async {
         defer { contextFor[meetingId] = nil }
         guard let meeting = fetch(meetingId), let audio = meeting.audioURL else { return }
+        AppLog.write("Processing \(meetingId): \(Int(meeting.durationSeconds))s of audio, engine \(AppSettings.engine.rawValue), model \(AppSettings.model)")
         do {
             update(meetingId) { $0.status = .transcribing }
             stageStarted[meetingId] = Date()
@@ -196,9 +197,9 @@ final class MeetingStore: ObservableObject {
             applyCorrections(meetingId: meetingId)
             var t = Date()
             if Vocabulary.cleanupEnabled { await cleanTranscript(meetingId: meetingId) }
-            NSLog("[timing] clean-up: %.1fs", Date().timeIntervalSince(t)); t = Date()
+            AppLog.write(String(format: "[timing] clean-up: %.1fs", Date().timeIntervalSince(t))); t = Date()
             await summarize(meetingId: meetingId)
-            NSLog("[timing] notes + title: %.1fs", Date().timeIntervalSince(t))
+            AppLog.write(String(format: "[timing] notes + title: %.1fs", Date().timeIntervalSince(t)))
         } catch {
             fail(meetingId, error)
         }
@@ -270,13 +271,14 @@ final class MeetingStore: ObservableObject {
             let speakers = Array(Set(turns.map(\.speaker))).sorted()
             if let answer = try? await ask(NotesPipeline.actionPrompt(turns, speakers: speakers, days: days), live: false) {
                 let items = NotesPipeline.checkedItems(answer, turns: turns, speakers: Set(speakers), meetingDate: meeting.createdAt)
-                NSLog("[actions] notes listed %d, action step returned %d lines, kept %d", NotesPipeline.actionItemCount(in: text),
-                      answer.split(separator: "\n").filter { $0.contains("{") }.count, items.count)
+                AppLog.write(String(format: "[actions] notes listed %d, action step returned %d lines, kept %d", NotesPipeline.actionItemCount(in: text),
+                      answer.split(separator: "\n").filter { $0.contains("{") }.count, items.count))
                 text = NotesPipeline.replaceActionItems(in: text, with: items)
             }
             let final = text.replacingOccurrences(of: " [?]", with: "").replacingOccurrences(of: "[?]", with: "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             update(meetingId) { $0.summary = final; $0.status = .done; $0.notesEdited = false }
+            AppLog.write("Notes ready for \(meetingId)")
             liveSummary[meetingId] = nil
             if Self.isAutoTitle(meeting.title) {
                 progress[meetingId] = "Naming the meeting"
@@ -322,7 +324,7 @@ final class MeetingStore: ObservableObject {
             }
         } catch {
             fraction[meetingId] = nil
-            NSLog("Transcript clean-up failed, keeping the recognizer's text: \(error.localizedDescription)")
+            AppLog.write("Transcript clean-up failed, keeping the recognizer's text: \(error.localizedDescription)")
         }
     }
 
@@ -438,7 +440,7 @@ final class MeetingStore: ObservableObject {
                 try db.execute(sql: "update segment set speaker = ? where meetingId = ? and speaker is null", arguments: [clean, meetingId])
             }
         } } catch {
-            NSLog("Speaker rename failed: \(error.localizedDescription)")
+            AppLog.write("Speaker rename failed: \(error.localizedDescription)")
         }
     }
 
@@ -655,6 +657,7 @@ final class MeetingStore: ObservableObject {
     }
 
     private func fail(_ id: String, _ error: Error) {
+        AppLog.write("Processing \(id) failed: \(error.localizedDescription)")
         update(id) { $0.status = .failed; $0.errorMessage = error.localizedDescription }
         progress[id] = nil
         fraction[id] = nil

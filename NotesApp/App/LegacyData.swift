@@ -21,9 +21,9 @@ enum LegacyData {
         if !fm.fileExists(atPath: new.path), fm.fileExists(atPath: old.appendingPathComponent("notes.sqlite").path) {
             do {
                 try fm.moveItem(at: old, to: new)
-                NSLog("Moved data from \(old.path) to \(new.path)")
+                AppLog.write("Moved data from \(old.path) to \(new.path)")
             } catch {
-                NSLog("Could not move the old data folder: \(error.localizedDescription)")
+                AppLog.write("Could not move the old data folder: \(error.localizedDescription)")
             }
         }
 

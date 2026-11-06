@@ -8,9 +8,13 @@ import GRDB
 /// dashboards) with on-device OCR and stores it with the meeting. The transcript pipeline mines
 /// it for exact spellings of names and technical terms. Nothing leaves the Mac; this app's own
 /// windows are excluded.
+/// Opt-in: off until the user turns it on in setup or Settings ▸ Vocabulary.
 @MainActor
 final class ScreenReader {
     private var task: Task<Void, Never>?
+
+    /// What the feature does, in the words setup and Settings both show.
+    nonisolated static let explanation = "While you record, text on your screen (shared slides, code, dashboards) is read on this Mac every 20 seconds, so names spelled there come out right in the transcript and notes. It stays with the meeting and is never uploaded."
 
     func start(meetingId: String) {
         stop()
