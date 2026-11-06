@@ -1,6 +1,7 @@
 import AVFoundation
 import AppKit
 import CoreGraphics
+import ScreenCaptureKit
 
 enum Permissions {
     enum State { case granted, denied, unknown }
@@ -22,6 +23,18 @@ enum Permissions {
     static func openMicrophoneSettings() {
         NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")!)
     }
+    /// Asks macOS for system-audio access the way a recording does. Only an app that has asked
+    /// appears under Screen & System Audio Recording, so opening the settings page alone is not enough.
+    /// Returns true when access is already there or was just given.
+    static func requestSystemAudio() async -> Bool {
+        do {
+            _ = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+            return true
+        } catch {
+            return false
+        }
+    }
+
     static func openSystemAudioSettings() {
         NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
     }

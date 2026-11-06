@@ -5,6 +5,8 @@ import SwiftUI
 @MainActor
 final class RecordingController: ObservableObject {
     @Published var title = ""
+    /// Notes typed during the recording, saved to the meeting as they change.
+    @Published var typedNotes = ""
     @Published private(set) var current: Meeting?
     @Published var error: String?
     @Published private(set) var busy = false
@@ -25,6 +27,7 @@ final class RecordingController: ObservableObject {
     }
 
     var isRecording: Bool { recorder.isRecording }
+    var currentId: String? { current?.id }
     private var captionTimer: Timer?
     private let screenReader = ScreenReader()
 
@@ -75,6 +78,8 @@ final class RecordingController: ObservableObject {
                     screenReader.stop()
                     let duration = try await recorder.stop()
                     if let meeting = current {
+                        store.saveTypedNotes(meeting.id, typedNotes)
+                        typedNotes = ""
                         if duration < 2 {
                             store.discardRecording(meeting)
                         } else {
@@ -88,6 +93,7 @@ final class RecordingController: ObservableObject {
                     if Permissions.microphone == .unknown { _ = await Permissions.requestMicrophone() }
                     let meeting = try store.createMeeting(title: title)
                     current = meeting
+                    typedNotes = ""
                     let captions = UserDefaults.standard.object(forKey: "captions.live") as? Bool ?? true
                     try await recorder.start(to: meeting.audioURL!, liveSamples: captions)
                     screenReader.start(meetingId: meeting.id)

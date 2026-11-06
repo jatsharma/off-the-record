@@ -3,6 +3,17 @@ import AVFoundation
 import ScreenCaptureKit
 import CoreMedia
 
+/// Audio input devices, for the microphone picker.
+enum Microphones {
+    static let key = "recording.microphone"     // AVCaptureDevice uniqueID, empty = system default
+    struct Device: Identifiable, Hashable { let id: String; let name: String }
+
+    static var available: [Device] {
+        AVCaptureDevice.DiscoverySession(deviceTypes: [.microphone, .external], mediaType: .audio, position: .unspecified)
+            .devices.map { Device(id: $0.uniqueID, name: $0.localizedName) }
+    }
+}
+
 enum RecorderError: LocalizedError {
     case noDisplay, notRecording, alreadyRecording
     var errorDescription: String? {
@@ -49,6 +60,11 @@ final class AudioRecorder: ObservableObject {
         config.sampleRate = 16_000
         config.channelCount = 1
         config.captureMicrophone = true
+        // A chosen microphone (Settings ▸ General ▸ Recording); otherwise the system default.
+        if let id = UserDefaults.standard.string(forKey: Microphones.key), !id.isEmpty,
+           Microphones.available.contains(where: { $0.id == id }) {
+            config.microphoneCaptureDeviceID = id
+        }
         config.width = 2
         config.height = 2
         config.minimumFrameInterval = CMTime(value: 1, timescale: 1)
@@ -127,7 +143,7 @@ final class AudioRecorder: ObservableObject {
 /// Receives both audio outputs, converts each to 16 kHz mono float, aligns them by
 /// timestamp into two channels, and writes a stereo WAV.
 final class CaptureSink: NSObject, SCStreamOutput, SCStreamDelegate {
-    let queue = DispatchQueue(label: "io.stackera.notes.capture")
+    let queue = DispatchQueue(label: "io.stackera.offtherecord.capture")
     var onLevel: ((Float) -> Void)?
     var onSystemLevel: ((Float) -> Void)?
     var onStopped: ((Error) -> Void)?

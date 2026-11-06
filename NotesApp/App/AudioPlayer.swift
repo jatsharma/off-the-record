@@ -52,6 +52,17 @@ final class AudioPlayer: ObservableObject {
         }
     }
 
+    /// Plays `seconds` from `start`, then pauses (a voice sample when naming speakers).
+    func playClip(from start: Double, seconds: Double) {
+        play(from: start)
+        let end = start + seconds
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(seconds))
+            guard let self, self.isPlaying, abs((self.player?.currentTime ?? 0) - end) < 1.5 else { return }
+            self.pause()
+        }
+    }
+
     func pause() {
         player?.pause()
         isPlaying = false
