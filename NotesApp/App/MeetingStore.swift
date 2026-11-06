@@ -214,6 +214,7 @@ final class MeetingStore: ObservableObject {
             let speakers = Array(Set(turns.map(\.speaker))).sorted()
             if let answer = try? await ask(NotesPipeline.actionPrompt(turns, speakers: speakers, days: days), live: false) {
                 let items = NotesPipeline.checkedItems(answer, turns: turns, speakers: Set(speakers), meetingDate: meeting.createdAt)
+                NSLog("[actions] action step returned %d lines, kept %d", answer.split(separator: "\n").filter { $0.contains("{") }.count, items.count)
                 text = NotesPipeline.replaceActionItems(in: text, with: items)
             }
             let final = text.replacingOccurrences(of: " [?]", with: "").replacingOccurrences(of: "[?]", with: "")

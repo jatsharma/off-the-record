@@ -7,14 +7,14 @@ enum AppSettings {
     static let promptKey = "llm.basePrompt"
     static let contextKey = "llm.contextTokens"
 
-    static let engineKey = "asr.engine"            // "parakeet" | "whisper" | "qwen3" | "tara" | "apex"
+    static let engineKey = "asr.engine"            // "parakeet" | "whisper" | "qwen3" | "tara" | "apex" | "mix"
     static let whisperModelKey = "asr.whisperModel"
     static let languageKey = "asr.language"        // "" = auto-detect (Whisper only)
     static let scriptsKey = "asr.scripts"          // comma list of scripts the meetings may contain
     static let defaultScripts = "latin,devanagari"
 
     static let defaultWhisperModel = "openai_whisper-large-v3-v20240930_turbo"
-    static let defaultModel = "qwen3.5:4b"
+    static let defaultModel = "gemma4:e4b"
     static let defaultURL = "http://127.0.0.1:11434"
     static let defaultContextTokens = 32_768
 
@@ -52,7 +52,9 @@ enum AppSettings {
     {{transcript}}
     """
 
-    static var engine: ASREngine { ASREngine(rawValue: UserDefaults.standard.string(forKey: engineKey) ?? "") ?? .parakeet }
+    /// Mix (Apex + Parakeet) when the Hinglish models are installed, else Parakeet.
+    static var defaultEngine: ASREngine { HinglishWhisper.isInstalled(.apex) ? .mix : .parakeet }
+    static var engine: ASREngine { ASREngine(rawValue: UserDefaults.standard.string(forKey: engineKey) ?? "") ?? defaultEngine }
     static var whisperModel: String { UserDefaults.standard.string(forKey: whisperModelKey).flatMap { $0.isEmpty ? nil : $0 } ?? defaultWhisperModel }
     static var expectedScripts: Set<String> {
         let raw = UserDefaults.standard.string(forKey: scriptsKey).flatMap { $0.isEmpty ? nil : $0 } ?? defaultScripts

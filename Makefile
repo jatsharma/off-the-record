@@ -36,7 +36,7 @@ distclean: clean
 
 setup:          ## One-time: Ollama + Qwen 3.5 4B (about 3.3 GB)
 	brew list ollama >/dev/null 2>&1 || brew install ollama
-	ollama serve >/dev/null 2>&1 & sleep 2; ollama pull qwen3.5:4b
+	ollama serve >/dev/null 2>&1 & sleep 2; ollama pull gemma4:e4b
 
 hinglish-models: ## Convert Tara and Apex (Hinglish Whisper) for the app; ~4.7 GB download, ~30 min
 	scripts/convert-hinglish.sh all

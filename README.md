@@ -28,7 +28,7 @@ call, transcribes on the Neural Engine, writes notes with a local LLM. Nothing l
 ## Build and run
 
 ```bash
-make setup   # one-time: installs Ollama and pulls qwen3.5:4b (about 3.3 GB)
+make setup   # one-time: installs Ollama and pulls gemma4:e4b (about 6.6 GB)
 ```
 
 ```bash
@@ -108,6 +108,18 @@ skipped, lines in scripts you do not use (Settings → "Scripts your meetings us
 Devanagari) are dropped, and overlapping duplicate turns are removed. Use it for Hindi or Hinglish
 meetings; it runs at roughly 2x real time. Parakeet for English.
 
+### Hinglish: Apex and the Mix engine (default)
+
+`make hinglish-models` adds Apex (a Whisper turbo fine-tune that writes romanized Hinglish) and
+Tara. Apex is the only engine that captures Hindi-heavy speech, but it turns English terms and
+numbers into Hinglish ("Confidence par" for Confluence, "13 thousand" for thirteen screens) and
+sometimes drops English sentences. Parakeet keeps English exact but turns Hindi into
+English-sounding nonsense. The **Mix** engine reads every speaker turn with Apex and with
+Parakeet, and keeps Parakeet's reading only where Apex's has almost no Hindi words and Parakeet's
+is almost all dictionary English. On a 31-minute technical meeting, Mix + gemma4:e4b notes covered
+about 22 of 33 checked facts with about 3 errors (Apex + qwen3.5:4b: about 13 with 8 errors), and
+a 94-second Hindi-heavy call stayed fully correct. Mix is the default when Apex is installed.
+
 Both engines normalise a quiet microphone channel before recognition and suppress the call's echo
 in it, so a laptop mic across the desk still yields your lines.
 
@@ -116,7 +128,7 @@ restores it into the vendored copy and ports its downloader to the current API.
 
 ## Settings
 
-- **Model** – any Ollama tag. `qwen3.5:4b` by default (about 4 GB of memory); `gemma4:e4b` is a close alternative and `gemma4:12b` is slightly more accurate but needs about 10 GB.
+- **Model** – any Ollama tag. `gemma4:e4b` by default (about 6.5 GB of memory while writing); `qwen3.5:4b` is lighter (about 4 GB) but got more facts wrong on a 31-minute test meeting; `gemma4:12b` needs about 10 GB.
 - **Context window** – 32k tokens by default, enough for roughly 90 minutes of speech.
 - **Notes prompt** – the user message sent to the model. Placeholders `{{title}}`, `{{date}}`, `{{transcript}}`.
 

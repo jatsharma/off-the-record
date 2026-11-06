@@ -2,9 +2,10 @@ import Foundation
 import AVFoundation
 import FluidAudio
 import WhisperKit
+import AppKit
 
 enum ASREngine: String, CaseIterable, Identifiable {
-    case parakeet, whisper, qwen3, tara, apex
+    case parakeet, whisper, qwen3, tara, apex, mix
     var id: String { rawValue }
     var label: String {
         switch self {
@@ -12,13 +13,16 @@ enum ASREngine: String, CaseIterable, Identifiable {
         case .whisper: return "Whisper large-v3-turbo (slower, 99 languages incl. Hindi)"
         case .qwen3: return "Qwen3-ASR 0.6B (30 languages incl. Hindi, experimental)"
         case .tara: return "Tara (Hinglish, experimental: slow)"
-        case .apex: return "Apex (Hinglish, romanized, recommended)"
+        case .apex: return "Apex (Hinglish, romanized)"
+        case .mix: return "Mix: Apex for Hindi, Parakeet for English (recommended)"
         }
     }
     /// Tara and Apex are Hindi–English models and always run in Hindi mode.
     var takesLanguageHint: Bool { self == .whisper || self == .qwen3 }
     /// Engines that read the audio one speaker turn at a time (they take at most 30 s per call).
-    var readsByTurns: Bool { self == .qwen3 || self == .tara || self == .apex }
+    var readsByTurns: Bool { self == .qwen3 || self == .tara || self == .apex || self == .mix }
+    /// The Hinglish model a turn-by-turn engine reads with (the mix uses Apex).
+    var hinglishModel: ASREngine { self == .mix ? .apex : self }
 }
 
 /// One timed unit of recognized text: a Parakeet token or a Whisper word.
@@ -109,6 +113,7 @@ actor SpeechEngine {
         case .whisper: whisper = nil; whisperModelName = nil
         case .qwen3: qwen3 = nil
         case .tara, .apex: if hinglishEngine == engine { hinglish = nil; hinglishEngine = nil }
+        case .mix: hinglish = nil; hinglishEngine = nil; asr = nil
         case nil: asr = nil; whisper = nil; whisperModelName = nil; qwen3 = nil; hinglish = nil; hinglishEngine = nil; diarizer = nil; offlineDiarizer = nil
         }
     }
@@ -122,12 +127,13 @@ actor SpeechEngine {
                 try await manager.loadModels(from: directory)
                 qwen3 = manager
             }
-        } else if engine == .tara || engine == .apex {
-            if hinglish == nil || hinglishEngine != engine {
+        } else if engine == .tara || engine == .apex || engine == .mix {
+            let model = engine.hinglishModel
+            if hinglish == nil || hinglishEngine != model {
                 hinglish = nil
-                status("Loading \(engine == .tara ? "Tara" : "Apex") (the first load after an update takes a few minutes)")
-                hinglish = try await HinglishWhisper.load(engine)
-                hinglishEngine = engine
+                status("Loading \(model == .tara ? "Tara" : "Apex") (the first load after an update takes a few minutes)")
+                hinglish = try await HinglishWhisper.load(model)
+                hinglishEngine = model
             }
         } else if engine == .whisper {
             let name = AppSettings.whisperModel
@@ -138,6 +144,13 @@ actor SpeechEngine {
                 whisperModelName = name
             }
         } else if asr == nil {
+            status("Loading speech model (Parakeet v3, about 500 MB on first run)")
+            let models = try await AsrModels.downloadAndLoad(version: .v3)
+            let manager = AsrManager(config: .default)
+            try await manager.loadModels(models)
+            asr = manager
+        }
+        if engine == .mix, asr == nil {
             status("Loading speech model (Parakeet v3, about 500 MB on first run)")
             let models = try await AsrModels.downloadAndLoad(version: .v3)
             let manager = AsrManager(config: .default)
@@ -217,7 +230,7 @@ actor SpeechEngine {
         let pieces: [TimedPiece]
         let fullText: String
         switch engine {
-        case .qwen3, .tara, .apex:
+        case .qwen3, .tara, .apex, .mix:
             throw SpeechError.notLoaded   // handled above
         case .parakeet:
             guard let asr else { throw SpeechError.notLoaded }
@@ -427,7 +440,7 @@ actor SpeechEngine {
 
         var lines: [TranscriptLine] = []
         let language = AppSettings.language
-        let name = engine == .qwen3 ? "Qwen3" : engine == .tara ? "Tara" : "Apex"
+        let name = engine == .qwen3 ? "Qwen3" : engine == .tara ? "Tara" : engine == .mix ? "Apex + Parakeet" : "Apex"
         for (i, c) in pieces.enumerated() where c.end - c.start >= 0.8 {
             status("Transcribing with \(name) (\(i + 1)/\(pieces.count))")
             let lo = max(0, Int((c.start - 0.2) * 16_000)), hi = min(samples.count, Int((c.end + 0.2) * 16_000))
@@ -437,9 +450,10 @@ actor SpeechEngine {
             if engine != .qwen3 {
                 // Tara and Apex spell English terms well on their own; a glossary prompt made Whisper
                 // insert terms that were not said, so they read the audio once, without one.
-                guard let hinglish, let raw = await HinglishWhisper.read(hinglish, Self.boost(chunk), engine: engine) else { continue }
-                let clean = Self.collapseRepeats(raw)
+                guard let hinglish, let raw = await HinglishWhisper.read(hinglish, Self.boost(chunk), engine: engine.hinglishModel) else { continue }
+                var clean = Self.collapseRepeats(raw)
                 guard Self.matchesExpectedScripts(clean) else { continue }
+                if engine == .mix, let english = await englishReading(of: chunk, apex: clean) { clean = english }
                 lines.append(TranscriptLine(start: c.start, end: c.end, speaker: c.speaker, text: clean))
                 continue
             }
@@ -452,6 +466,61 @@ actor SpeechEngine {
                                         altText: plain == nil || hinted == plain ? nil : hinted))
         }
         return TranscriptResult(lines: Self.dedupeOverlaps(lines), speakerVectors: vectors)
+    }
+
+    // MARK: - Mix: Parakeet for English stretches
+
+    /// Mix engine: Parakeet's reading of a piece when that piece is English. Apex romanizes English
+    /// terms and numbers into Hinglish ("Confidence par" for Confluence, "13 thousand" for thirteen
+    /// screens); Parakeet keeps them exact but turns Hindi into English-sounding nonsense. A piece is
+    /// taken as English when Apex's reading has almost no Hindi words and Parakeet's reading is
+    /// almost all dictionary English and not much shorter. Nil keeps Apex's reading.
+    private func englishReading(of chunk: [Float], apex: String) async -> String? {
+        let hindi = Self.hindiShare(apex)
+        guard hindi <= 0.12, let asr, chunk.count >= 8_000,
+              let state = try? TdtDecoderState(decoderLayers: await asr.decoderLayerCount) else { return nil }
+        var decoder = state
+        guard let result = try? await asr.transcribe(chunk, decoderState: &decoder) else { return nil }
+        let parakeet = Self.collapseRepeats(result.text.trimmingCharacters(in: .whitespacesAndNewlines))
+        let english = await MainActor.run { Self.englishShare(parakeet) }
+        let words = { (t: String) in t.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).count }
+        let take = english >= 0.8 && words(parakeet) * 10 >= words(apex) * 7
+        NSLog("[mix] %@ hindi=%.2f english=%.2f | apex: %@ | parakeet: %@", take ? "PARAKEET" : "apex", hindi, english, apex, parakeet)
+        return take ? parakeet : nil
+    }
+
+    /// Common Hindi words as Apex romanizes them. Words that are also everyday English ("to", "do",
+    /// "main", "so", "hi", "me", "the") are left out.
+    static let hindiWords: Set<String> = [
+        "hai", "hain", "ho", "hoga", "hogi", "honge", "hota", "hoti", "hote", "tha", "thi", "ka", "ki", "ke",
+        "ko", "se", "mein", "men", "pe", "aur", "toh", "bhi", "nahin", "nahi", "kya", "kyon", "kyonki", "jo", "jab",
+        "vah", "yah", "ye", "vo", "voh", "ham", "hamen", "hamaara", "hamaari", "hamaare", "aap", "aapka", "aapki",
+        "aapke", "aapko", "mera", "mere", "meri", "mujhe", "tum", "tumhe", "usko", "uska", "uski", "uske", "unka",
+        "iska", "iski", "iske", "isko", "ismen", "usmen", "kar", "karna", "karke", "karenge", "karte", "karta",
+        "karo", "kiya", "raha", "rahi", "rahe", "rahega", "gaya", "gai", "gaye", "jaega", "jaata", "jaati", "lagta",
+        "lekin", "agar", "phir", "abhi", "sab", "saare", "saari", "ek", "thik", "theek", "haan", "achchha", "matlab",
+        "vahaan", "yahaan", "jaise", "waisa", "kuchh", "kaise", "kitna", "kitne", "lie", "liye", "sakte", "sakta",
+        "chaahie", "chahiye", "dekho", "dekhna", "bolo", "baad", "pahle", "saath", "hisaab", "vaala", "vaali", "vaale",
+    ]
+
+    static func hindiShare(_ text: String) -> Double {
+        let words = text.lowercased().split(whereSeparator: { !$0.isLetter }).map(String.init)
+        guard !words.isEmpty else { return 1 }
+        return Double(words.filter { hindiWords.contains($0) }.count) / Double(words.count)
+    }
+
+    /// Share of words the English spell checker accepts. Acronyms (RFID) and words with digits count
+    /// as English; Parakeet's renderings of Hindi ("Pele", "gantri vanti") mostly do not.
+    @MainActor static func englishShare(_ text: String) -> Double {
+        let words = text.split(whereSeparator: { !$0.isLetter && !$0.isNumber && $0 != "'" }).map(String.init)
+        guard !words.isEmpty else { return 0 }
+        let checker = NSSpellChecker.shared
+        let ok = words.filter { word in
+            if word.contains(where: \.isNumber) || (word.count > 1 && word == word.uppercased()) { return true }
+            return checker.checkSpelling(of: word, startingAt: 0, language: "en", wrap: false,
+                                         inSpellDocumentWithTag: 0, wordCount: nil).location == NSNotFound
+        }.count
+        return Double(ok) / Double(words.count)
     }
 
     /// One recognizer pass over a chunk, cleaned and filtered; nil when nothing usable came back.

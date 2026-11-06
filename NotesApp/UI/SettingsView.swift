@@ -15,7 +15,7 @@ struct SettingsView: View {
 }
 
 struct GeneralSettings: View {
-    @AppStorage(AppSettings.engineKey) private var engine = ASREngine.parakeet.rawValue
+    @AppStorage(AppSettings.engineKey) private var engine = AppSettings.defaultEngine.rawValue
     @AppStorage(AppSettings.whisperModelKey) private var whisperModel = AppSettings.defaultWhisperModel
     @AppStorage(AppSettings.languageKey) private var language = ""
     @AppStorage(AppSettings.scriptsKey) private var scripts = AppSettings.defaultScripts
@@ -77,7 +77,7 @@ struct GeneralSettings: View {
                 Toggle("Write long meetings part by part", isOn: $notesByParts)
                 Text("For meetings over 15 minutes: notes for each 8-minute part, then combined. Catches more points, but small models also make more mistakes this way, and it takes about four times as long.")
                     .font(.caption).foregroundStyle(.secondary)
-                Text("qwen3.5:4b (3.3 GB download) needs about 4 GB of memory while writing and wrote the best notes of the light models in testing. gemma4:e4b (about 6.5 GB in memory) is a close alternative; gemma4:12b is a little more accurate but needs about 10 GB, which slows a 16 GB Mac. 32k tokens covers roughly a 90-minute meeting. Models that are not installed are pulled on first use.")
+                Text("gemma4:e4b (about 6.5 GB in memory while writing) wrote the most complete and most accurate notes in testing. qwen3.5:4b needs about 4 GB but got more facts wrong on long meetings; gemma4:12b is a little more accurate but needs about 10 GB, which slows a 16 GB Mac. 32k tokens covers roughly a 90-minute meeting. Models that are not installed are pulled on first use.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
@@ -85,12 +85,13 @@ struct GeneralSettings: View {
     }
 
     private var engineHelp: String {
-        switch ASREngine(rawValue: engine) ?? .parakeet {
+        switch ASREngine(rawValue: engine) ?? AppSettings.defaultEngine {
         case .parakeet: return "Fastest and most accurate for English. Hindi comes out as English sounds. About 70 s per 30 minutes of audio."
         case .whisper: return "99 languages. Slower (about 7 minutes per 30 minutes of audio) and drops speech on mixed-language calls."
         case .qwen3: return "Uses your Vocabulary list as a hint. Hindi comes out in Devanagari and the clean-up pass romanizes it. Slow: about 20 minutes per 30 minutes of audio."
         case .tara: return "Whisper large-v3 tuned for Hinglish, Hindi in Devanagari and English terms in Latin script. Most accurate in Python tests, but on this Mac it runs at about real time (30 minutes per 30-minute call) and garbles some long Hindi stretches. Experimental." + installNote(.tara)
         case .apex: return "Whisper turbo tuned for Hinglish. Writes romanized Hinglish with English terms spelled normally (\"postgres mein time scale daal denge\"). Best on technical Hinglish calls in testing; about 8 minutes per 30 minutes of audio." + installNote(.apex)
+        case .mix: return "Apex reads every turn and Parakeet reads it too; turns that are almost all English keep Parakeet's exact spelling of terms and numbers, the rest keep Apex. Gave the best notes on both test meetings; about the same time as Apex and about 0.5 GB more memory while transcribing." + installNote(.apex)
         }
     }
 
@@ -168,7 +169,7 @@ struct PromptSettings: View {
 /// Every downloaded model with its size and a delete button. Deleting frees disk only:
 /// whichever engine is selected downloads what it needs again on next use.
 struct ModelsSettings: View {
-    @AppStorage(AppSettings.engineKey) private var engine = ASREngine.parakeet.rawValue
+    @AppStorage(AppSettings.engineKey) private var engine = AppSettings.defaultEngine.rawValue
     @State private var sizes: [String: Int64?] = [:]
     @State private var pendingDelete: ModelEntry?
     @State private var busy: Set<String> = []
