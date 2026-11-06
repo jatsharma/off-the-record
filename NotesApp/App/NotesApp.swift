@@ -6,6 +6,10 @@ import UniformTypeIdentifiers
 final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor static weak var recording: RecordingController?
 
+    func applicationWillTerminate(_ notification: Notification) {
+        OllamaRuntime.stopStartedServer()
+    }
+
     @MainActor
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let recording = Self.recording, recording.isRecording else { return .terminateNow }
@@ -25,6 +29,7 @@ struct NotesApp: App {
     @StateObject private var recording: RecordingController
 
     init() {
+        LegacyData.migrate()
         let recorder = AudioRecorder()
         let store = MeetingStore.shared
         _recorder = StateObject(wrappedValue: recorder)
@@ -59,6 +64,8 @@ struct NotesApp: App {
             }
             CommandGroup(replacing: .help) {
                 Button("Setup Assistant…") { store.showSetup = true }
+                Button("Acknowledgements…") { NSApp.orderFrontStandardAboutPanel(nil); NSApp.activate(ignoringOtherApps: true) }
+                Button("Copy Diagnostics") { Task { await Diagnostics.copy() } }
             }
         }
 
@@ -71,7 +78,7 @@ struct NotesApp: App {
                 Button("Start Recording  ⌃⌥⌘R") { recording.toggle() }
             }
             Divider()
-            Button("Open Meeting Notes") { NSApp.activate(ignoringOtherApps: true) }
+            Button("Open Off the Record") { NSApp.activate(ignoringOtherApps: true) }
         } label: {
             HStack(spacing: 4) {
                 Image(systemName: recording.isRecording ? (recorder.isPaused ? "pause.circle.fill" : "record.circle.fill") : "waveform.circle")
@@ -91,19 +98,21 @@ struct NotesApp: App {
 
 enum ImportAudio {
     @MainActor
-    static func present(store: MeetingStore) {
+    @discardableResult
+    static func present(store: MeetingStore) -> Meeting? {
         let panel = NSOpenPanel()
         panel.title = "Import a recording"
         panel.allowedContentTypes = [.wav, .mp3, .mpeg4Audio, .aiff, .audio]
         panel.allowsMultipleSelection = false
-        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard panel.runModal() == .OK, let url = panel.url else { return nil }
         do {
-            try store.importAudio(from: url)
+            return try store.importAudio(from: url)
         } catch {
             let alert = NSAlert()
             alert.messageText = "Import failed"
             alert.informativeText = error.localizedDescription
             alert.runModal()
+            return nil
         }
     }
 }

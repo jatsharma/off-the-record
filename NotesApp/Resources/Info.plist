@@ -5,7 +5,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Meeting Notes</string>
+	<string>Off the Record</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -13,7 +13,7 @@
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>Meeting Notes</string>
+	<string>Off the Record</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -25,10 +25,10 @@
 	<key>LSMinimumSystemVersion</key>
 	<string>15.0</string>
 	<key>NSAudioCaptureUsageDescription</key>
-	<string>Notes records the other side of your call from system audio. Audio never leaves this Mac.</string>
+	<string>Off the Record transcribes the other side of your call from system audio. Audio never leaves this Mac.</string>
 	<key>NSHumanReadableCopyright</key>
 	<string>Local only.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Notes records your side of the meeting. Audio never leaves this Mac.</string>
+	<string>Off the Record transcribes your side of the meeting. Audio never leaves this Mac.</string>
 </dict>
 </plist>

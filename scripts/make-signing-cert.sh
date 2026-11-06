@@ -1,15 +1,16 @@
 #!/bin/sh
-# Creates a self-signed code-signing certificate named "Meeting Notes Dev" in the
-# login keychain and trusts it for code signing. Run once:
-#     sh scripts/make-dev-cert.sh
-# Then build with CODE_SIGN_IDENTITY="Meeting Notes Dev" (project.yml already
-# points at this name once you switch it on).
+# Creates a self-signed code-signing certificate named "Off the Record" in the login keychain
+# and trusts it for code signing. Run once on the machine that builds releases:
+#     sh scripts/make-signing-cert.sh
+# `make` then signs with it automatically.
 #
-# Why: ad-hoc signed apps get a new signature on every build, and macOS ties the
-# Screen & System Audio Recording permission to the signature, so the permission
-# breaks after each rebuild. A stable certificate keeps it.
+# Why: ad-hoc signed apps get a new signature on every build, and macOS ties the microphone and
+# Screen & System Audio Recording permissions to the signature, so users would have to allow them
+# again after every update. Signing every release with the same certificate keeps them.
+# Keep the private key safe (export it from Keychain Access as a backup): releases signed with a
+# different key lose those permissions. A Developer ID certificate replaces this for notarized builds.
 set -e
-NAME="Meeting Notes Dev"
+NAME="${1:-Off the Record}"
 DIR=$(mktemp -d)
 cd "$DIR"
 /usr/bin/openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -days 3650 -nodes \
