@@ -5,22 +5,21 @@ import WhisperKit
 import AppKit
 
 enum ASREngine: String, CaseIterable, Identifiable {
-    case parakeet, whisper, qwen3, tara, apex, mix
+    case parakeet, whisper, tara, apex, mix
     var id: String { rawValue }
     var label: String {
         switch self {
         case .parakeet: return "Parakeet v3 (fast, English + European)"
         case .whisper: return "Whisper large-v3-turbo (slower, 99 languages incl. Hindi)"
-        case .qwen3: return "Qwen3-ASR 0.6B (30 languages incl. Hindi, experimental)"
         case .tara: return "Tara (Hinglish, experimental: slow)"
         case .apex: return "Apex (Hinglish, romanized)"
         case .mix: return "Mix: Apex for Hindi, Parakeet for English (recommended)"
         }
     }
     /// Tara and Apex are Hindi–English models and always run in Hindi mode.
-    var takesLanguageHint: Bool { self == .whisper || self == .qwen3 }
+    var takesLanguageHint: Bool { self == .whisper }
     /// Engines that read the audio one speaker turn at a time (they take at most 30 s per call).
-    var readsByTurns: Bool { self == .qwen3 || self == .tara || self == .apex || self == .mix }
+    var readsByTurns: Bool { self == .tara || self == .apex || self == .mix }
     /// The Hinglish model a turn-by-turn engine reads with (the mix uses Apex).
     var hinglishModel: ASREngine { self == .mix ? .apex : self }
 }
@@ -37,8 +36,8 @@ struct TranscriptLine {
     var end: Double
     var speaker: String?
     var text: String
-    /// A second reading of the same audio made with the glossary as context (Qwen3 only). It spells
-    /// terms better but can drop words or invent glossary terms, so the clean-up pass weighs both.
+    /// A second reading of the same audio made with the glossary as context (from the removed Qwen3
+    /// engine; older transcripts may have it). The clean-up pass weighs both.
     var altText: String? = nil
 }
 
@@ -63,7 +62,7 @@ enum SpeechError: LocalizedError {
         case .notLoaded: return "Speech models are not loaded."
         case .unreadableAudio: return "Could not read the recording."
         case .modelMissing(let engine):
-            return "\(engine.label) is not installed. Run `make hinglish-models` in the project folder, or pick another engine in Settings."
+            return "\(engine.label) could not be downloaded. Check the internet connection and try again, or pick another engine in Settings."
         }
     }
 }
@@ -102,7 +101,6 @@ actor SpeechEngine {
     }
     private var whisper: WhisperKit?
     private var whisperModelName: String?
-    private var qwen3: Qwen3AsrManager?
     private var hinglish: WhisperKit?
     private var hinglishEngine: ASREngine?
 
@@ -111,27 +109,27 @@ actor SpeechEngine {
         switch engine {
         case .parakeet: asr = nil
         case .whisper: whisper = nil; whisperModelName = nil
-        case .qwen3: qwen3 = nil
         case .tara, .apex: if hinglishEngine == engine { hinglish = nil; hinglishEngine = nil }
         case .mix: hinglish = nil; hinglishEngine = nil; asr = nil
-        case nil: asr = nil; whisper = nil; whisperModelName = nil; qwen3 = nil; hinglish = nil; hinglishEngine = nil; diarizer = nil; offlineDiarizer = nil
+        case nil: asr = nil; whisper = nil; whisperModelName = nil; hinglish = nil; hinglishEngine = nil; diarizer = nil; offlineDiarizer = nil
         }
     }
 
-    func prepare(engine: ASREngine, status: @escaping @Sendable (String) -> Void) async throws {
-        if engine == .qwen3 {
-            if qwen3 == nil {
-                status("Loading Qwen3-ASR 0.6B (about 1.2 GB on first run)")
-                let directory = try await Qwen3AsrModels.download(variant: .f32)
-                let manager = Qwen3AsrManager()
-                try await manager.loadModels(from: directory)
-                qwen3 = manager
-            }
-        } else if engine == .tara || engine == .apex || engine == .mix {
+    /// Loads (and on first use downloads) what `engine` needs. `report` gets a fraction while a
+    /// download's size is known, nil otherwise.
+    func prepare(engine: ASREngine, report: @escaping ProgressReport) async throws {
+        let status: @Sendable (String) -> Void = { report(nil, $0) }
+        if engine == .tara || engine == .apex || engine == .mix {
             let model = engine.hinglishModel
             if hinglish == nil || hinglishEngine != model {
                 hinglish = nil
-                status("Loading \(model == .tara ? "Tara" : "Apex") (the first load after an update takes a few minutes)")
+                let label = model == .tara ? "Tara" : "Apex"
+                if !HinglishWhisper.isInstalled(model) {
+                    let size = HinglishWhisper.downloadSize[model] ?? ""
+                    report(0, "Downloading \(label) (\(size), once)")
+                    try await HinglishWhisper.download(model) { f in report(f, "Downloading \(label) (\(size), once)") }
+                }
+                status("Loading \(label) (the first load after an update takes a few minutes)")
                 hinglish = try await HinglishWhisper.load(model)
                 hinglishEngine = model
             }
@@ -143,36 +141,54 @@ actor SpeechEngine {
                 whisper = try await WhisperKit(WhisperKitConfig(model: name, downloadBase: ModelCatalog.whisperRoot, verbose: false, logLevel: .error))
                 whisperModelName = name
             }
-        } else if asr == nil {
-            status("Loading speech model (Parakeet v3, about 500 MB on first run)")
-            let models = try await AsrModels.downloadAndLoad(version: .v3)
-            let manager = AsrManager(config: .default)
-            try await manager.loadModels(models)
-            asr = manager
         }
-        if engine == .mix, asr == nil {
-            status("Loading speech model (Parakeet v3, about 500 MB on first run)")
-            let models = try await AsrModels.downloadAndLoad(version: .v3)
+        if asr == nil, engine == .parakeet || engine == .mix {
+            let models = try await Self.downloading(ModelCatalog.parakeetFolder, expected: ModelCatalog.parakeetBytes,
+                                                    label: "speech model (Parakeet, 480 MB, once)", report: report) {
+                try await AsrModels.downloadAndLoad(version: .v3)
+            }
+            status("Loading speech model")
             let manager = AsrManager(config: .default)
             try await manager.loadModels(models)
             asr = manager
         }
         if diarizer == nil {
+            let models = try await Self.downloading(ModelCatalog.diarizerFolder, expected: ModelCatalog.diarizerBytes,
+                                                    label: "speaker model (35 MB, once)", report: report) {
+                try await DiarizerModels.downloadIfNeeded()
+            }
             status("Loading speaker model")
-            let models = try await DiarizerModels.downloadIfNeeded()
             let manager = DiarizerManager(config: .default)
             manager.initialize(models: models)
             diarizer = manager
         }
     }
 
-    /// - context: glossary text for recognizers that accept it (Qwen3-ASR); see `Vocabulary`.
+    /// Runs a FluidAudio download, which reports no progress of its own, while measuring how far its
+    /// folder has grown against the model's known size.
+    private static func downloading<T>(_ folder: URL, expected: Int64, label: String, report: @escaping ProgressReport,
+                                       _ work: () async throws -> T) async throws -> T {
+        let present = ModelCatalog.folderSize(folder) ?? 0
+        guard present < expected * 9 / 10 else { return try await work() }
+        report(0, "Downloading \(label)")
+        let watcher = Task.detached(priority: .utility) {
+            while !Task.isCancelled {
+                let now = ModelCatalog.folderSize(folder) ?? 0
+                report(min(0.99, Double(now) / Double(expected)), "Downloading \(label)")
+                try? await Task.sleep(for: .milliseconds(500))
+            }
+        }
+        defer { watcher.cancel() }
+        return try await work()
+    }
+
+    /// - context: glossary text for recognizers that accept it (Whisper); see `Vocabulary`.
     func transcribe(file: URL, knownVoices: [KnownVoice] = [], context: String? = nil,
                     report: @escaping ProgressReport) async throws -> TranscriptResult {
         let engine = AppSettings.engine
         let status: @Sendable (String) -> Void = { report(nil, $0) }
         var t = Date()
-        try await prepare(engine: engine, status: status)
+        try await prepare(engine: engine, report: report)
         NSLog("[timing] load models: %.1fs", Date().timeIntervalSince(t)); t = Date()
         guard let diarizer else { throw SpeechError.notLoaded }
 
@@ -232,7 +248,7 @@ actor SpeechEngine {
         let pieces: [TimedPiece]
         let fullText: String
         switch engine {
-        case .qwen3, .tara, .apex, .mix:
+        case .tara, .apex, .mix:
             throw SpeechError.notLoaded   // handled above
         case .parakeet:
             guard let asr else { throw SpeechError.notLoaded }
@@ -293,7 +309,7 @@ actor SpeechEngine {
     func quickTranscribe(_ samples: [Float]) async -> String {
         guard samples.count >= 8_000 else { return "" }
         do {
-            try await prepare(engine: .parakeet, status: { _ in })
+            try await prepare(engine: .parakeet, report: { _, _ in })
             guard let asr else { return "" }
             var state = try TdtDecoderState(decoderLayers: await asr.decoderLayerCount)
             return try await asr.transcribe(samples, decoderState: &state).text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -434,15 +450,13 @@ actor SpeechEngine {
             energyTurns = Self.speechRuns(samples)
         }
 
-        // Build chunks: consecutive same-speaker turns joined up to 15 s; silence gaps over 2 s
-        // that the diarizer did not label become unlabelled chunks so no speech is skipped.
-        // Qwen3's decoder holds 512 tokens and audio takes 13 per second: a 25 s chunk left about
-        // 170 tokens for text, so long Hindi turns came back cut off mid-sentence. 15 s leaves
-        // room for the glossary and about 200 tokens of text. WhisperKit stops each read at 223
+        // Build chunks: consecutive same-speaker turns joined up to the length limit; silence gaps
+        // over 2 s that the diarizer did not label become unlabelled chunks so no speech is skipped.
+        // WhisperKit stops each read at 223
         // tokens: Tara's Devanagari needs about 8 tokens a second (18 s pieces), Apex's romanized
         // text about 5 (25 s).
         struct Chunk { var start: Double; var end: Double; var speaker: String? }
-        let maxLen = engine == .qwen3 ? 15.0 : engine == .tara ? 18.0 : 25.0
+        let maxLen = engine == .tara ? 18.0 : 25.0
         var chunks: [Chunk] = []
         var cursor = 0.0
         if let fixedSpeaker {
@@ -481,31 +495,20 @@ actor SpeechEngine {
         }
 
         var lines: [TranscriptLine] = []
-        let language = AppSettings.language
-        let name = engine == .qwen3 ? "Qwen3" : engine == .tara ? "Tara" : engine == .mix ? "Apex + Parakeet" : "Apex"
+        let name = engine == .tara ? "Tara" : engine == .mix ? "Apex + Parakeet" : "Apex"
         for (i, c) in pieces.enumerated() where c.end - c.start >= 0.8 {
             status("Transcribing with \(name) (\(i + 1)/\(pieces.count))")
             let lo = max(0, Int((c.start - 0.2) * 16_000)), hi = min(samples.count, Int((c.end + 0.2) * 16_000))
             guard hi > lo else { continue }
             let chunk = Array(samples[lo..<hi])
             guard Self.voicedRatio(chunk) >= 0.25 else { continue }          // mostly silence: skip
-            if engine != .qwen3 {
-                // Tara and Apex spell English terms well on their own; a glossary prompt made Whisper
-                // insert terms that were not said, so they read the audio once, without one.
-                guard let hinglish, let raw = await HinglishWhisper.read(hinglish, Self.boost(chunk), engine: engine.hinglishModel) else { continue }
-                var clean = Self.collapseRepeats(raw)
-                guard Self.matchesExpectedScripts(clean) else { continue }
-                if engine == .mix, let english = await englishReading(of: chunk, apex: clean) { clean = english }
-                lines.append(TranscriptLine(start: c.start, end: c.end, speaker: c.speaker, text: clean))
-                continue
-            }
-            guard let qwen3 else { throw SpeechError.notLoaded }
-            // Two readings when there is a glossary: plain (faithful) and hinted (better spellings).
-            let plain = await readQwen3(qwen3, chunk, language: language, context: nil)
-            let hinted = context == nil ? nil : await readQwen3(qwen3, chunk, language: language, context: context)
-            guard let text = plain ?? hinted else { continue }
-            lines.append(TranscriptLine(start: c.start, end: c.end, speaker: c.speaker, text: text,
-                                        altText: plain == nil || hinted == plain ? nil : hinted))
+            // Tara and Apex spell English terms well on their own; a glossary prompt made Whisper
+            // insert terms that were not said, so they read the audio once, without one.
+            guard let hinglish, let raw = await HinglishWhisper.read(hinglish, Self.boost(chunk), engine: engine.hinglishModel) else { continue }
+            var clean = Self.collapseRepeats(raw)
+            guard Self.matchesExpectedScripts(clean) else { continue }
+            if engine == .mix, let english = await englishReading(of: chunk, apex: clean) { clean = english }
+            lines.append(TranscriptLine(start: c.start, end: c.end, speaker: c.speaker, text: clean))
         }
         return TranscriptResult(lines: Self.dedupeOverlaps(lines), speakerVectors: vectors)
     }
@@ -563,14 +566,6 @@ actor SpeechEngine {
                                          inSpellDocumentWithTag: 0, wordCount: nil).location == NSNotFound
         }.count
         return Double(ok) / Double(words.count)
-    }
-
-    /// One recognizer pass over a chunk, cleaned and filtered; nil when nothing usable came back.
-    private func readQwen3(_ qwen3: Qwen3AsrManager, _ chunk: [Float], language: String?, context: String?) async -> String? {
-        let text = (try? await qwen3.transcribe(audioSamples: chunk, language: language, context: context)) ?? ""
-        let clean = Self.collapseRepeats(text.trimmingCharacters(in: .whitespacesAndNewlines))
-        guard clean.contains(where: { $0.isLetter || $0.isNumber }), Self.matchesExpectedScripts(clean) else { return nil }
-        return clean
     }
 
     /// Rejects recognizer output written in a script the meeting is not expected to contain

@@ -24,6 +24,11 @@ enum ModelCatalog {
             .appendingPathComponent("FluidAudio/Models", isDirectory: true)
     }()
     static let whisperRoot = AppDatabase.supportDirectory.appendingPathComponent("Models/whisperkit", isDirectory: true)
+    static var parakeetFolder: URL { fluidRoot.appendingPathComponent("parakeet-tdt-0.6b-v3") }
+    static var diarizerFolder: URL { fluidRoot.appendingPathComponent("speaker-diarization") }
+    /// Sizes on disk once downloaded, for download progress (FluidAudio reports none).
+    static let parakeetBytes: Int64 = 483_000_000
+    static let diarizerBytes: Int64 = 35_500_000
 
     static var entries: [ModelEntry] {
         [
@@ -35,20 +40,17 @@ enum ModelCatalog {
                        kind: .folder(fluidRoot.appendingPathComponent("silero-vad")), engine: nil),
             ModelEntry(id: "whisper", name: "Whisper large-v3-turbo", purpose: "Transcription, 99 languages",
                        kind: .folder(whisperRoot), engine: .whisper),
-            ModelEntry(id: "qwen3", name: "Qwen3-ASR 0.6B", purpose: "Transcription, Hindi and 29 more",
-                       kind: .folder(fluidRoot.appendingPathComponent("qwen3-asr-0.6b")), engine: .qwen3),
-            ModelEntry(id: "tara", name: "Tara (Hinglish Whisper large-v3)", purpose: "Transcription, Hinglish (make hinglish-models)",
+            ModelEntry(id: "tara", name: "Tara (Hinglish Whisper large-v3)", purpose: "Transcription, Hinglish, most faithful but slow (3.1 GB)",
                        kind: .folder(HinglishWhisper.folder(for: .tara)!), engine: .tara),
-            ModelEntry(id: "apex", name: "Apex (Hinglish Whisper turbo)", purpose: "Transcription, Hinglish (make hinglish-models)",
+            ModelEntry(id: "apex", name: "Apex (Hinglish Whisper turbo)", purpose: "Transcription, Hinglish; used by Mix (1.6 GB)",
                        kind: .folder(HinglishWhisper.folder(for: .apex)!), engine: .apex),
-            ModelEntry(id: "nemotron", name: "Nemotron streaming", purpose: "Not used by this app (left by Shruti)",
-                       kind: .folder(fluidRoot.appendingPathComponent("nemotron-streaming")), engine: nil),
             ModelEntry(id: "llm", name: AppSettings.model, purpose: "Notes (language model)",
                        kind: .ollama(AppSettings.model), engine: nil),
         ]
     }
 
     static func sizeOnDisk(_ entry: ModelEntry) async -> Int64? {
+        if let engine = entry.engine, HinglishWhisper.repos[engine] != nil, !HinglishWhisper.isInstalled(engine) { return nil }
         switch entry.kind {
         case .folder(let url):
             return folderSize(url)

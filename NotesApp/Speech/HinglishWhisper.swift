@@ -2,8 +2,9 @@ import Foundation
 import CoreML
 import WhisperKit
 
-/// Two Whisper fine-tunes for Hindi–English (Hinglish) meetings, converted to WhisperKit's Core ML
-/// format on this Mac by `make hinglish-models` (see scripts/convert-hinglish.sh):
+/// Two Whisper fine-tunes for Hindi–English (Hinglish) meetings in WhisperKit's Core ML format,
+/// downloaded on first use from the converted copies on Hugging Face (or built locally with
+/// `make hinglish-models`, see scripts/convert-hinglish.sh):
 /// - Tara (Trelis/tara): Whisper large-v3. In its mixed-code mode Hindi stays in Devanagari and
 ///   English words come out in Latin script ("Postgres में timescale डाल देंगे"). Best accuracy.
 /// - Apex (Oriserve/Whisper-Hindi2Hinglish-Apex): Whisper large-v3-turbo. Writes everything in
@@ -12,7 +13,18 @@ import WhisperKit
 enum HinglishWhisper {
     static let root = AppDatabase.supportDirectory.appendingPathComponent("Models/hinglish", isDirectory: true)
 
-    static func folder(for engine: ASREngine) -> URL? {
+    /// The converted models on Hugging Face (Apache-2.0, like the originals).
+    static let repos: [ASREngine: String] = [
+        .apex: "jatsharma/whisper-hinglish-apex-coreml",
+        .tara: "jatsharma/whisper-hinglish-tara-coreml",
+    ]
+    static let downloadSize: [ASREngine: String] = [.apex: "1.6 GB", .tara: "3.1 GB"]
+
+    private static var hub: HubApiWrapper { HubApiWrapper(downloadBase: root) }
+    private static let completeMarker = ".complete"
+
+    /// Built on this Mac by `make hinglish-models`.
+    private static func builtFolder(_ engine: ASREngine) -> URL? {
         switch engine {
         case .tara: return root.appendingPathComponent("tara", isDirectory: true)
         case .apex: return root.appendingPathComponent("apex", isDirectory: true)
@@ -20,11 +32,37 @@ enum HinglishWhisper {
         }
     }
 
+    /// Downloaded from Hugging Face.
+    private static func downloadedFolder(_ engine: ASREngine) -> URL? {
+        repos[engine].map { hub.localRepoLocation(.init(id: $0)) }
+    }
+
+    private static func hasModelFiles(_ folder: URL) -> Bool {
+        ["AudioEncoder.mlmodelc", "TextDecoder.mlmodelc", "MelSpectrogram.mlmodelc", "tokenizer.json"]
+            .allSatisfy { FileManager.default.fileExists(atPath: folder.appendingPathComponent($0).path) }
+    }
+
+    /// Where the model is (or will be downloaded to).
+    static func folder(for engine: ASREngine) -> URL? {
+        if let built = builtFolder(engine), hasModelFiles(built) { return built }
+        return downloadedFolder(engine) ?? builtFolder(engine)
+    }
+
+    /// A download counts only once every file arrived (the marker is written last).
     static func isInstalled(_ engine: ASREngine) -> Bool {
-        guard let folder = folder(for: engine) else { return false }
-        let fm = FileManager.default
-        return ["AudioEncoder.mlmodelc", "TextDecoder.mlmodelc", "MelSpectrogram.mlmodelc", "tokenizer.json"]
-            .allSatisfy { fm.fileExists(atPath: folder.appendingPathComponent($0).path) }
+        if let built = builtFolder(engine), hasModelFiles(built) { return true }
+        guard let folder = downloadedFolder(engine) else { return false }
+        return hasModelFiles(folder) && FileManager.default.fileExists(atPath: folder.appendingPathComponent(completeMarker).path)
+    }
+
+    /// Downloads the model from Hugging Face. Files already there are skipped, so an interrupted
+    /// download continues where it stopped.
+    static func download(_ engine: ASREngine, progress: @escaping @Sendable (Double) -> Void) async throws {
+        guard let repo = repos[engine], let folder = downloadedFolder(engine) else { throw SpeechError.modelMissing(engine) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        _ = try await hub.snapshot(from: .init(id: repo)) { p in progress(p.fractionCompleted) }
+        guard hasModelFiles(folder) else { throw SpeechError.modelMissing(engine) }
+        FileManager.default.createFile(atPath: folder.appendingPathComponent(completeMarker).path, contents: Data())
     }
 
     /// Loads a converted model from its folder. The tokenizer ships in the same folder (Tara's has the
