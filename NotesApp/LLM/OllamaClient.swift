@@ -1,10 +1,13 @@
 import Foundation
 
 enum LLMError: LocalizedError {
-    case ollamaMissing, ollamaNotResponding, badResponse(Int), server(String)
+    case ollamaMissing, ollamaNotResponding, badResponse(Int), server(String), runtimeDownload(String), portBusy(String), ollamaExited
     var errorDescription: String? {
         switch self {
-        case .ollamaMissing: return "Ollama is not installed. Run `brew install ollama` (or `make setup`)."
+        case .ollamaMissing: return "Ollama is not installed and could not be downloaded. Check the internet connection, or install it from ollama.com."
+        case .portBusy(let address): return "Another program is using \(address), where Ollama runs. Quit that program, or set a different Ollama server address in Settings ▸ General ▸ Notes ▸ Advanced."
+        case .ollamaExited: return "Ollama stopped right after starting. Another copy may be using its address; quitting Ollama from the menu bar and trying again usually helps."
+        case .runtimeDownload(let why): return "Could not download Ollama: \(why). Check the internet connection and try again."
         case .ollamaNotResponding: return "Ollama did not start. Try `ollama serve` in a terminal."
         case .badResponse(let code): return "Ollama returned HTTP \(code)."
         case .server(let message): return "Ollama: \(message)"
@@ -15,7 +18,6 @@ enum LLMError: LocalizedError {
 /// Thin client for a local Ollama server. Starts the server if it is not running.
 struct OllamaClient {
     var baseURL: URL
-    private static let binaries = ["/opt/homebrew/bin/ollama", "/usr/local/bin/ollama"]
     private static let session: URLSession = {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 600      // prompt processing on a long transcript can take minutes
@@ -23,28 +25,51 @@ struct OllamaClient {
         return URLSession(configuration: config)
     }()
 
-    func isUp() async -> Bool {
-        guard let (_, response) = try? await Self.session.data(from: baseURL.appendingPathComponent("api/version")) else { return false }
-        return (response as? HTTPURLResponse)?.statusCode == 200
+    func isUp() async -> Bool { await probe() == .ollama }
+
+    enum Probe { case ollama, other, nothing }
+
+    /// What answers at the server address: Ollama, something else, or nothing.
+    func probe() async -> Probe {
+        var request = URLRequest(url: baseURL.appendingPathComponent("api/version"))
+        request.timeoutInterval = 3
+        do {
+            let (data, response) = try await Self.session.data(for: request)
+            let ok = (response as? HTTPURLResponse)?.statusCode == 200
+                && (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["version"] != nil
+            return ok ? .ollama : .other
+        } catch let error as URLError where [.cannotConnectToHost, .cannotFindHost, .timedOut, .notConnectedToInternet].contains(error.code) {
+            return .nothing
+        } catch {
+            return .other        // something listens there but does not speak HTTP like Ollama
+        }
     }
 
-    func ensureRunning() async throws {
-        if await isUp() { return }
-        guard let binary = Self.binaries.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
-            throw LLMError.ollamaMissing
+    /// Starts Ollama if it is not running. With no Ollama on this Mac, downloads the runtime first
+    /// (see `OllamaRuntime`); `status` reports that download.
+    func ensureRunning(status: (@Sendable (Double?, String) -> Void)? = nil) async throws {
+        switch await probe() {
+        case .ollama: return
+        case .other: throw LLMError.portBusy(address)
+        case .nothing: break
         }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: binary)
-        process.arguments = ["serve"]
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        try process.run()
+        if OllamaRuntime.installedBinary == nil {
+            status?(0, "Downloading Ollama (\(OllamaRuntime.downloadSize), once)")
+            try await OllamaRuntime.install { f in status?(f, "Downloading Ollama (\(OllamaRuntime.downloadSize), once)") }
+        }
+        guard let binary = OllamaRuntime.installedBinary else { throw LLMError.ollamaMissing }
+        status?(nil, "Starting Ollama")
+        try OllamaRuntime.launch(binary, host: address)
         for _ in 0..<40 {
             try await Task.sleep(for: .milliseconds(500))
             if await isUp() { return }
+            if !OllamaRuntime.startedServerIsRunning { throw LLMError.ollamaExited }
         }
         throw LLMError.ollamaNotResponding
     }
+
+    /// host:port of the server address, as Ollama's OLLAMA_HOST takes it.
+    var address: String { "\(baseURL.host ?? "127.0.0.1"):\(baseURL.port ?? 11434)" }
 
     func hasModel(_ name: String) async throws -> Bool {
         struct Tags: Decodable { struct Model: Decodable { let name: String }; let models: [Model] }
@@ -53,7 +78,8 @@ struct OllamaClient {
         return tags.models.contains { $0.name == name || $0.name == name + ":latest" }
     }
 
-    func pull(_ name: String, progress: @escaping (String) -> Void) async throws {
+    /// Downloads a model; `progress` gets the fraction while Ollama reports sizes.
+    func pull(_ name: String, progress: @escaping (Double?, String) -> Void) async throws {
         struct Line: Decodable { let status: String?; let completed: Int64?; let total: Int64? }
         var request = URLRequest(url: baseURL.appendingPathComponent("api/pull"))
         request.httpMethod = "POST"
@@ -61,10 +87,10 @@ struct OllamaClient {
         let (bytes, _) = try await Self.session.bytes(for: request)
         for try await raw in bytes.lines {
             guard let line = try? JSONDecoder().decode(Line.self, from: Data(raw.utf8)) else { continue }
-            if let total = line.total, let done = line.completed, total > 0 {
-                progress("Downloading \(name): \(Int(Double(done) / Double(total) * 100))%")
-            } else if let status = line.status {
-                progress(status)
+            if let total = line.total, let done = line.completed, total > 100_000_000 {
+                progress(Double(done) / Double(total), "Downloading \(name)")
+            } else if let status = line.status, line.total == nil {
+                progress(nil, status.prefix(1).uppercased() + status.dropFirst())
             }
         }
     }
