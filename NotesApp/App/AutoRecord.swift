@@ -24,8 +24,30 @@ enum AutoRecord {
         return args[i + 1]
     }
 
+    /// `NotesApp --download-model apex|tara` downloads a Hinglish model from Hugging Face, as the
+    /// app does on first use, and logs the result.
+    static var downloadModel: ASREngine? {
+        let args = CommandLine.arguments
+        guard let i = args.firstIndex(of: "--download-model"), i + 1 < args.count else { return nil }
+        return ASREngine(rawValue: args[i + 1])
+    }
+
     @MainActor
     static func run(recorder: AudioRecorder, store: MeetingStore, select: @escaping (String) -> Void) async {
+        if let model = downloadModel {
+            let started = Date()
+            do {
+                var last = -1
+                try await HinglishWhisper.download(model) { f in
+                    let p = Int(f * 100)
+                    if p / 10 != last / 10 { last = p; NSLog("[download] %@ %d%%", model.rawValue, p) }
+                }
+                NSLog("[download] %@ done in %.0fs: installed=%d at %@", model.rawValue, Date().timeIntervalSince(started),
+                      HinglishWhisper.isInstalled(model) ? 1 : 0, HinglishWhisper.folder(for: model)?.path ?? "-")
+            } catch {
+                NSLog("[download] %@ failed: %@", model.rawValue, error.localizedDescription)
+            }
+        }
         if let id = summarizeId {
             select(id)
             await store.enqueue(id) { await $0.summarize(meetingId: id) }.value

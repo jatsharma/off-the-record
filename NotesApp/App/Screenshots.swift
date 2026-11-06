@@ -17,7 +17,13 @@ enum Screenshots {
     static func run(select: @escaping (String?) -> Void, openSettings: @escaping () -> Void) async {
         guard let dir = directory else { return }
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        try? await Task.sleep(for: .seconds(1.5))
+        try? await Task.sleep(for: .seconds(2.5))
+        // The Setup Assistant shows as a sheet on a first launch.
+        if let sheet = mainWindow()?.attachedSheet {
+            await capture(sheet, to: dir.appendingPathComponent("0-setup.png"))
+            sheet.sheetParent?.endSheet(sheet)
+            try? await Task.sleep(for: .seconds(0.8))
+        }
         select(nil)
         try? await Task.sleep(for: .seconds(0.8))
         await capture(mainWindow(), to: dir.appendingPathComponent("1-record.png"))

@@ -15,6 +15,10 @@ struct MeetingDetailView: View {
     @State private var editingNotes = false        // whole note as Markdown
     @State private var notesDraft = ""
     @State private var lesson: Vocabulary.NotesLesson?
+    @State private var speakerNames: [String: String] = [:]
+    @State private var typedDraft: String?
+    @State private var showTyped = false
+    @AppStorage("speakers.dismissed") private var dismissedSpeakerCards = ""
     @State private var renaming: String?? = nil   // .some(speaker) while the popover is open
     @State private var newSpeakerName = ""
     @State private var editingSegment: Segment?
@@ -98,6 +102,12 @@ struct MeetingDetailView: View {
         ScrollView {
             let text = store.liveSummary[meeting.id] ?? meeting.summary
             VStack(alignment: .leading, spacing: 12) {
+                if showSpeakerCard(meeting), !editingNotes {
+                    speakerCard(meeting).frame(maxWidth: 760).padding(.bottom, 6)
+                }
+                if !editingNotes, store.liveSummary[meeting.id] == nil {
+                    typedNotesSection(meeting).frame(maxWidth: 760, alignment: .leading)
+                }
                 if editingNotes {
                     TextEditor(text: $notesDraft)
                         .font(.body.monospaced())
@@ -162,6 +172,9 @@ struct MeetingDetailView: View {
             } else {
                 ScrollViewReader { proxy in
                     ScrollView {
+                        if showSpeakerCard(meeting) {
+                            speakerCard(meeting).frame(maxWidth: 764).padding(.horizontal, 28).padding(.top, 14)
+                        }
                         LazyVStack(alignment: .leading, spacing: 2) {
                             ForEach(observer.segments) { segment in
                                 TranscriptRow(segment: segment,
@@ -222,6 +235,102 @@ struct MeetingDetailView: View {
         }
     }
 
+    // MARK: Typed notes
+
+    /// What the user typed during the meeting, editable; the notes are written from it with the transcript.
+    @ViewBuilder
+    private func typedNotesSection(_ meeting: Meeting) -> some View {
+        let saved = meeting.typedNotes ?? ""
+        if saved.isEmpty && !showTyped {
+            Button { showTyped = true; typedDraft = "" } label: { Label("Add your own notes", systemImage: "square.and.pencil") }
+                .buttonStyle(.link).font(.callout)
+        } else {
+            DisclosureGroup(isExpanded: Binding(get: { showTyped || !saved.isEmpty && typedDraft != nil }, set: { open in
+                showTyped = open
+                typedDraft = open ? (typedDraft ?? saved) : nil
+            })) {
+                VStack(alignment: .leading, spacing: 6) {
+                    TypedNotesEditor(text: Binding(get: { typedDraft ?? saved }, set: { typedDraft = $0 }))
+                    HStack {
+                        Text("Regenerate the notes to build them from these.").font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Save") { store.saveTypedNotes(meeting.id, typedDraft ?? saved) }
+                            .controlSize(.small)
+                            .disabled((typedDraft ?? saved) == saved)
+                    }
+                }
+                .padding(.top, 6)
+            } label: {
+                Label("Your notes from the meeting", systemImage: "square.and.pencil").font(.callout.weight(.semibold))
+            }
+        }
+    }
+
+    // MARK: Naming speakers
+
+    /// Unnamed speakers with how much they said and where their longest line starts.
+    private var unnamedSpeakers: [(label: String, lines: Int, sample: Double)] {
+        var stats: [String: (lines: Int, longest: Double, at: Double)] = [:]
+        for s in observer.segments {
+            guard let label = s.speaker, MeetingStore.isUnnamed(label) else { continue }
+            var e = stats[label] ?? (0, 0, s.startTime)
+            e.lines += 1
+            if s.endTime - s.startTime > e.longest { e.longest = s.endTime - s.startTime; e.at = s.startTime }
+            stats[label] = e
+        }
+        return stats.map { ($0.key, $0.value.lines, $0.value.at) }.sorted { $0.label.localizedStandardCompare($1.label) == .orderedAscending }
+    }
+
+    private func showSpeakerCard(_ meeting: Meeting) -> Bool {
+        meeting.status == .done && !dismissedSpeakerCards.split(separator: ",").contains(Substring(meeting.id))
+            && !unnamedSpeakers.isEmpty
+    }
+
+    /// Asks once per meeting who the unknown voices were. Names go into the transcript and the notes,
+    /// and the voices are remembered for later meetings.
+    private func speakerCard(_ meeting: Meeting) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label("Who was in this meeting?", systemImage: "person.2.wave.2").font(.callout.weight(.semibold))
+                Spacer()
+                Button("Not now") { dismissedSpeakerCards += (dismissedSpeakerCards.isEmpty ? "" : ",") + meeting.id }
+                    .controlSize(.small)
+            }
+            Text("Name the voices and the notes use real names. Off the Record remembers each voice for next time.")
+                .font(.caption).foregroundStyle(.secondary)
+            ForEach(unnamedSpeakers, id: \.label) { speaker in
+                HStack(spacing: 10) {
+                    Circle().fill(SpeakerPalette.color(for: speaker.label, in: observer.segments)).frame(width: 8, height: 8)
+                    Text(speaker.label).font(.callout).frame(width: 90, alignment: .leading)
+                    Text("\(speaker.lines) line\(speaker.lines == 1 ? "" : "s")").font(.caption).foregroundStyle(.secondary)
+                        .frame(width: 60, alignment: .leading)
+                    Button {
+                        showPlayer = true
+                        Task { await player.load(meeting.audioURL); player.playClip(from: speaker.sample, seconds: 6) }
+                    } label: { Label("Listen", systemImage: "play.circle") }
+                    .controlSize(.small)
+                    .disabled(meeting.audioURL == nil)
+                    .help("Play six seconds of this voice")
+                    TextField("Name", text: Binding(get: { speakerNames[speaker.label] ?? "" }, set: { speakerNames[speaker.label] = $0 }))
+                        .textFieldStyle(.roundedBorder).frame(maxWidth: 200)
+                        .onSubmit { nameSpeaker(speaker.label, in: meeting) }
+                    Button("Save") { nameSpeaker(speaker.label, in: meeting) }
+                        .controlSize(.small)
+                        .disabled((speakerNames[speaker.label] ?? "").trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+        }
+        .padding(14)
+        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private func nameSpeaker(_ label: String, in meeting: Meeting) {
+        let name = (speakerNames[label] ?? "").trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return }
+        store.renameSpeaker(label, to: name, in: meeting.id)
+        speakerNames[label] = nil
+    }
+
     /// Shows what an edit taught, if anything.
     private func show(_ learned: Vocabulary.NotesLesson) {
         guard !learned.isEmpty else { return }
@@ -270,13 +379,6 @@ struct MeetingDetailView: View {
     @ToolbarContentBuilder
     private func toolbarContent(_ meeting: Meeting) -> some ToolbarContent {
         ToolbarItemGroup {
-            if tab == .notes {
-                Button {
-                    if editingNotes { editingNotes = false } else { notesDraft = meeting.summary ?? ""; editingNotes = true }
-                } label: { Label(editingNotes ? "Stop editing" : "Edit as Markdown", systemImage: editingNotes ? "pencil.slash" : "chevron.left.forwardslash.chevron.right") }
-                .help(editingNotes ? "Discard edits" : "Edit the whole note as Markdown (double-click a line to edit just that line)")
-                .disabled((meeting.summary ?? "").isEmpty && !editingNotes)
-            }
             Button {
                 if showPlayer { showPlayer = false; player.stop() } else { listen(meeting) }
             } label: { Label(showPlayer ? "Hide player" : "Listen", systemImage: showPlayer ? "headphones.slash" : "headphones") }
@@ -289,18 +391,35 @@ struct MeetingDetailView: View {
             .help("Write the notes again with the current prompt and model")
             .disabled(observer.segments.isEmpty || meeting.status == .summarizing || meeting.status == .transcribing)
 
-            Button {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(tab == .notes ? (meeting.summary ?? "") : Summarizer.transcriptText(observer.segments), forType: .string)
-            } label: { Label("Copy", systemImage: "doc.on.doc") }
-            .help(tab == .notes ? "Copy notes as Markdown" : "Copy transcript")
-            .disabled(tab == .notes ? (meeting.summary ?? "").isEmpty : observer.segments.isEmpty)
+            Menu {
+                Button("Copy Notes") { copy(meeting.summary ?? "") }.disabled((meeting.summary ?? "").isEmpty)
+                Button("Copy Transcript") { copy(Summarizer.transcriptText(observer.segments)) }.disabled(observer.segments.isEmpty)
+                Divider()
+                Button("Export as Markdown…") { exportMarkdown(meeting) }
+            } label: { Label("Share", systemImage: "square.and.arrow.up") }
+            .help("Copy or export the notes and transcript")
 
-            Button {
-                exportMarkdown(meeting)
-            } label: { Label("Export", systemImage: "square.and.arrow.up") }
-            .help("Save notes and transcript as a Markdown file")
+            Menu {
+                Button(editingNotes ? "Stop Editing Markdown" : "Edit Notes as Markdown") {
+                    tab = .notes
+                    if editingNotes { editingNotes = false } else { notesDraft = meeting.summary ?? ""; editingNotes = true }
+                }
+                .disabled((meeting.summary ?? "").isEmpty && !editingNotes)
+                Button("Name Speakers…") {
+                    dismissedSpeakerCards = dismissedSpeakerCards.split(separator: ",").filter { $0 != Substring(meeting.id) }.joined(separator: ",")
+                }
+                .disabled(unnamedSpeakers.isEmpty)
+                Divider()
+                Button("Retranscribe") { store.retranscribe(meeting) }
+                    .disabled(meeting.audioPath == nil || meeting.status == .transcribing || meeting.status == .summarizing)
+            } label: { Label("More", systemImage: "ellipsis.circle") }
+            .help("More actions")
         }
+    }
+
+    private func copy(_ text: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
     }
 
     private func exportMarkdown(_ meeting: Meeting) {
@@ -427,6 +546,7 @@ struct PlayerBar: View {
                     Image(systemName: player.isPlaying ? "pause.fill" : "play.fill").font(.title3).frame(width: 24)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
                 .keyboardShortcut(spaceToggles ? KeyboardShortcut(.space, modifiers: []) : nil)
                 .help(player.isLoaded ? "Play / pause (space)" : "This recording could not be opened")
                 .disabled(!player.isLoaded)
@@ -461,6 +581,7 @@ struct TranscriptRow: View {
             .buttonStyle(.plain)
             .disabled(!canPlay)
             .help(canPlay ? "Play from here" : "")
+            .accessibilityLabel("Play from \(Summarizer.clock(segment.startTime))")
             VStack(alignment: .leading, spacing: 3) {
                 Button(action: onRename) {
                     Text(segment.speaker ?? "Unknown")
@@ -474,6 +595,7 @@ struct TranscriptRow: View {
             Spacer(minLength: 0)
             VStack(spacing: 6) {
                 Button(action: onEdit) { Image(systemName: "pencil") }
+                    .accessibilityLabel("Correct this line")
                     .buttonStyle(.plain)
                     .foregroundStyle(.secondary)
                     .help("Correct this line")

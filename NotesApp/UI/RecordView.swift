@@ -7,6 +7,8 @@ struct RecordView: View {
     @AppStorage("captions.live") private var liveCaptions = true
     @State private var micState = Permissions.microphone
     @State private var systemState = Permissions.systemAudio
+    /// Opens a meeting made from an imported file.
+    var onImported: (String) -> Void = { _ in }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -26,13 +28,24 @@ struct RecordView: View {
                             }
                             .buttonStyle(.bordered).clipShape(Circle())
                             .help(recorder.isPaused ? "Resume" : "Pause (keeps one file)")
+                            .accessibilityLabel(recorder.isPaused ? "Resume recording" : "Pause recording")
                         }
                         RecordButton(isRecording: recorder.isRecording, busy: recording.busy) { recording.toggle() }
+                            .accessibilityLabel(recorder.isRecording ? "Stop recording" : "Start recording")
                         if recorder.isRecording { Color.clear.frame(width: 44, height: 44) }
                     }
                     Text(recorder.isPaused ? "Paused" : (recorder.isRecording ? "Recording. Press to stop." : "Press to start · ⌘R here, ⌃⌥⌘R anywhere"))
                         .font(.callout)
                         .foregroundStyle(.secondary)
+                    if !recorder.isRecording {
+                        Button {
+                            if let meeting = ImportAudio.present(store: store) { onImported(meeting.id) }
+                        } label: {
+                            Label("Import an audio file…", systemImage: "square.and.arrow.down")
+                        }
+                        .buttonStyle(.bordered)
+                        .help("Transcribe a recording you already have (WAV, MP3, M4A, AIFF, CAF, FLAC). You can also drop files on this window.")
+                    }
                 }
 
                 // Title
@@ -52,7 +65,12 @@ struct RecordView: View {
                 // Permissions
                 HStack(spacing: 10) {
                     PermissionChip(name: "Microphone", state: micState) { Permissions.openMicrophoneSettings() }
-                    PermissionChip(name: "System audio", state: systemState) { Permissions.openSystemAudioSettings() }
+                    PermissionChip(name: "System audio", state: systemState) {
+                        // Ask first: macOS lists only apps that asked under Screen & System Audio Recording.
+                        Task {
+                            if await Permissions.requestSystemAudio() { systemState = .granted } else { Permissions.openSystemAudioSettings() }
+                        }
+                    }
                 }
                 .onReceive(Timer.publish(every: 2, on: .main, in: .common).autoconnect()) { _ in
                     micState = Permissions.microphone
@@ -62,6 +80,17 @@ struct RecordView: View {
                 if recorder.isRecording, liveCaptions {
                     LiveCaptions(lines: store.liveCaptions)
                         .frame(maxWidth: 560)
+                }
+
+                if recorder.isRecording {
+                    TypedNotesEditor(text: $recording.typedNotes)
+                        .frame(maxWidth: 560)
+                        .task(id: recording.typedNotes) {
+                            // Saved a second after typing stops, so a crash loses at most that.
+                            try? await Task.sleep(for: .seconds(1))
+                            guard !Task.isCancelled, let id = recording.currentId else { return }
+                            store.saveTypedNotes(id, recording.typedNotes)
+                        }
                 }
 
                 if let error = recording.error {
@@ -211,5 +240,30 @@ struct LiveCaptions: View {
         }
         .padding(12)
         .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 10))
+    }
+}
+
+/// A plain box for the user's own notes during a recording.
+struct TypedNotesEditor: View {
+    @Binding var text: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label("Your notes", systemImage: "square.and.pencil").font(.callout.weight(.semibold))
+            ZStack(alignment: .topLeading) {
+                if text.isEmpty {
+                    Text("Type what matters: decisions, numbers, who owns what. The notes will keep your points and fill in the details from the call.")
+                        .foregroundStyle(.tertiary)
+                        .padding(.horizontal, 5).padding(.vertical, 8)
+                        .allowsHitTesting(false)
+                }
+                TextEditor(text: $text)
+                    .scrollContentBackground(.hidden)
+                    .padding(.vertical, 2)
+            }
+            .frame(height: 130)
+            .padding(6)
+            .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
+        }
     }
 }

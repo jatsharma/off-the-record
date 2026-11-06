@@ -114,6 +114,7 @@ struct EditableNotes: View {
                 }
                 if editable, editing != index {
                     Button { begin(index, line) } label: { Image(systemName: "pencil").font(.caption) }
+                        .accessibilityLabel("Edit this line")
                         .buttonStyle(.plain)
                         .foregroundStyle(.secondary)
                         .opacity(hovered == index ? 1 : 0)
@@ -145,6 +146,7 @@ struct EditableNotes: View {
             }
             .buttonStyle(.plain)
             .disabled(onToggle == nil)
+            .accessibilityLabel(done ? "Mark as not done" : "Mark as done")
         case .bullet:
             Text(line.level == 0 ? "•" : "◦").foregroundStyle(.secondary)
         case .numbered(let n):

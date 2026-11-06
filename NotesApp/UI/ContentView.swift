@@ -11,12 +11,16 @@ struct ContentView: View {
     @Environment(\.openSettings) private var openSettings
     @State private var hotKey: GlobalHotKey?
     @State private var dropTargeted = false
+    /// Meetings whose transcript contains the search text.
+    @State private var transcriptMatches: Set<String> = []
     static let actionItemsId = "__action-items"
 
     private var filtered: [Meeting] {
         let q = search.trimmingCharacters(in: .whitespaces).lowercased()
         guard !q.isEmpty else { return meetings.items }
-        return meetings.items.filter { $0.title.lowercased().contains(q) || ($0.summary ?? "").lowercased().contains(q) }
+        return meetings.items.filter {
+            $0.title.lowercased().contains(q) || ($0.summary ?? "").lowercased().contains(q) || transcriptMatches.contains($0.id)
+        }
     }
 
     private var groups: [(String, [Meeting])] {
@@ -64,7 +68,15 @@ struct ContentView: View {
                     }
                 }
             }
-            .searchable(text: $search, placement: .sidebar, prompt: "Search titles and notes")
+            .searchable(text: $search, placement: .sidebar, prompt: "Search meetings")
+            .task(id: search) {
+                // Transcripts are searched in the database, after a short pause in typing.
+                let q = search.trimmingCharacters(in: .whitespaces)
+                guard q.count >= 2 else { transcriptMatches = []; return }
+                try? await Task.sleep(for: .milliseconds(250))
+                guard !Task.isCancelled else { return }
+                transcriptMatches = store.meetingsWithTranscript(containing: q)
+            }
             .navigationTitle("Meetings")
             .navigationSplitViewColumnWidth(min: 240, ideal: 300)
             .toolbar {
@@ -84,7 +96,7 @@ struct ContentView: View {
                 MeetingDetailView(meetingId: id)
                     .id(id)
             } else {
-                RecordView()
+                RecordView(onImported: { selection = $0 })
             }
         }
         .onDrop(of: [.fileURL], isTargeted: $dropTargeted) { providers in
@@ -119,8 +131,11 @@ struct ContentView: View {
                 pendingDelete = nil
             }
         }
+        #if DEBUG
+        // Developer launch options (--auto-record, --import, --summarize, --screenshots); not in releases.
         .task { await AutoRecord.run(recorder: recorder, store: store) { selection = $0 } }
         .task { await Screenshots.run(select: { selection = $0 }, openSettings: { openSettings() }) }
+        #endif
     }
 }
 
@@ -133,7 +148,7 @@ struct MeetingRow: View {
             StatusDot(status: meeting.status)
                 .padding(.top, 6)
             VStack(alignment: .leading, spacing: 3) {
-                Text(meeting.title).font(.body.weight(.medium)).lineLimit(2)
+                Text(meeting.title).font(.body.weight(.medium)).foregroundStyle(.primary).lineLimit(2)
                 if let preview = Self.preview(meeting.summary) {
                     Text(preview).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
@@ -176,8 +191,8 @@ struct StatusDot: View {
     let status: MeetingStatus
     var body: some View {
         switch status {
-        case .done: Circle().fill(.green).frame(width: 8, height: 8)
-        case .failed: Circle().fill(.orange).frame(width: 8, height: 8)
+        case .done: Color.clear.frame(width: 8, height: 8)          // finished meetings need no marker
+        case .failed: Circle().fill(.orange).frame(width: 8, height: 8).accessibilityLabel("Needs attention")
         case .recording: Circle().fill(.red).frame(width: 8, height: 8)
         case .transcribing, .summarizing: ProgressView().controlSize(.mini).frame(width: 8, height: 8)
         }
