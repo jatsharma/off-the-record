@@ -1,155 +1,147 @@
-# Meeting Notes
+<p align="center">
+  <img src="docs/images/icon.png" width="128" height="128" alt="Off the Record icon">
+</p>
 
-A personal meeting recorder for Apple Silicon Macs. Records the mic and the other side of the
-call, transcribes on the Neural Engine, writes notes with a local LLM. Nothing leaves the Mac.
+<h1 align="center">Off the Record</h1>
 
-## What it does
+<p align="center">
+  <b>Meeting notes that never leave your Mac.</b><br>
+  Records both sides of a call, transcribes it on the Neural Engine and writes the notes with a local
+  language model. Works for English and for Hindi–English (Hinglish) meetings.
+</p>
 
-1. **Record** – one button, ⌘R, ⌃⌥⌘R from any app, or the menu bar item. Microphone and system audio
-   through ScreenCaptureKit into a two-channel 16 kHz WAV (left = you, right = the call). Pause and
-   resume keep one file. Rough live captions appear while you record. If capture stops on its own
-   (permission change, audio device gone), the audio so far is saved and transcribed.
-2. **Transcribe** – Parakeet TDT 0.6b v3 (CoreML, via FluidAudio) on each channel: your lines are
-   labelled **You**; the call is diarized into speakers. Echo of the call picked up by the mic is
-   suppressed before transcription. Rename a speaker once and that voice is recognised in later
-   meetings (Settings → Voices). Naming a second label after a speaker already in the meeting
-   merges the two. Meetings are processed one at a time; others wait in line.
-3. **Notes** – Gemma 4 e4b through Ollama, with an editable prompt. Notes are editable in place,
-   checkboxes are tickable, and an Action items view collects open ones across meetings. Meetings
-   left untitled are named by the model.
-4. **Keep or delete** – every meeting shows audio and transcript sizes with per-item delete;
-   Settings → Storage deletes audio older than N days; Settings → Models deletes model downloads
-   (they come back on next use).
+<p align="center">
+  <a href="https://github.com/jatsharma/off-the-record/releases/latest"><img alt="Download" src="https://img.shields.io/badge/download-macOS%20DMG-c8283c?style=for-the-badge&logo=apple&logoColor=white"></a>
+</p>
 
-## Requirements
+<p align="center">
+  <img alt="macOS 15+" src="https://img.shields.io/badge/macOS-15%2B-black?logo=apple">
+  <img alt="Apple Silicon" src="https://img.shields.io/badge/Apple%20Silicon-M1%E2%80%93M4-black">
+  <img alt="Swift" src="https://img.shields.io/badge/Swift-SwiftUI-F05138?logo=swift&logoColor=white">
+  <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-blue"></a>
+  <img alt="Local only" src="https://img.shields.io/badge/cloud-none-2ea44f">
+</p>
 
-- macOS 15 or later, Apple Silicon, 16 GB RAM recommended.
-- Xcode 26 (for the build) and [XcodeGen](https://github.com/yonaskolb/XcodeGen): `brew install xcodegen`.
-- Ollama: `brew install ollama`. The app starts `ollama serve` itself if it is not running.
+<p align="center">
+  <img src="docs/images/notes.png" width="860" alt="Notes written from a meeting">
+</p>
 
-## Build and run
+## Why Off the Record
 
-```bash
-make setup   # one-time: installs Ollama and pulls gemma4:e4b (about 6.6 GB)
-```
+- **Private by design.** Audio, transcripts and notes stay on your Mac. No account, no cloud, no telemetry.
+  The only network use is the one-time download of the models.
+- **No bot in your call.** It records your microphone and the call's audio straight from macOS, so it
+  works with Zoom, Meet, Teams, Slack, WhatsApp or anything else that plays sound.
+- **Built for Hinglish.** Most transcription tools turn Hindi into English-sounding nonsense. Off the
+  Record reads Hindi with a Hinglish model and English terms and numbers with an English one.
+- **Notes you can check.** Decisions and action items carry the time they were said; click a time in the
+  notes to hear that moment. Action items are verified against the transcript before they are listed.
+- **It learns your words.** Fix a misheard name once, in the transcript or the notes, and later meetings
+  get it right.
 
-```bash
-make run     # xcodegen + xcodebuild (Debug, ad-hoc signed) + open the app
-```
+## Features
 
-Or `make gen` and open `NotesApp.xcodeproj` in Xcode and press Run. For a scripted smoke test, `NotesApp --auto-record 30` records for 30 seconds on launch and runs the pipeline. `make deps` vendors FluidAudio into `Vendor/` first (Xcode 26 ignores SwiftPM package traits, so the vendored copy drops the traits manifest to keep the diarizer compiled in).
-
-### Code signing (do this once)
-
-macOS ties the Screen & System Audio Recording permission to the app's code signature. An
-ad-hoc signed app gets a new signature on every build, so the permission would break after each
-rebuild. Create a local signing certificate once:
-
-```bash
-sh scripts/make-dev-cert.sh
-```
-
-It creates a self-signed "Meeting Notes Dev" certificate in your login keychain, trusted for code
-signing only (Keychain asks for your password at the trust step). `project.yml` already signs with
-that name. If you have an Apple Development certificate instead, put its name in
-`CODE_SIGN_IDENTITY` and your team in `DEVELOPMENT_TEAM`.
-
-Hardened runtime is off in `project.yml` because its library validation rejects the app's own
-dylibs when the certificate has no Team ID. Turn it on only for a Developer ID build.
-
-If a build still cannot record after a permission change, quit and relaunch the app: a permission
-request that was already waiting does not pick up the new setting. If macOS shows the app as
-allowed but it still cannot record, remove the entry with the "−" button in System Settings so a
-fresh prompt appears.
-
-On first launch a Setup Assistant walks through Microphone and System Audio permission and the model
-downloads (Help → Setup Assistant to reopen it). The first
-transcription downloads about 500 MB of speech models from Hugging Face into
-`~/Library/Application Support/FluidAudio/Models`.
-
-## Where things live
-
-| What | Path |
+| | |
 | --- | --- |
-| Database | `~/Library/Application Support/Notes/notes.sqlite` |
-| Recordings | `~/Library/Application Support/Notes/Audio/<meeting id>.wav` (two channels, about 230 MB per hour) |
-| Speech models | `~/Library/Application Support/FluidAudio/Models` |
-| LLM weights | `~/.ollama/models` |
+| **Record** | One click, ⌘R, ⌃⌥⌘R from any app, or the menu bar. Your side and the call are kept apart, and the call's echo is removed from your microphone. Pause and resume, live captions, and a box to type your own notes while you talk. |
+| **Transcribe** | Parakeet for English, or the Mix engine for Hinglish (Apex for the Hindi, Parakeet for English terms and numbers). Speakers are separated and remembered: name a voice once and it is recognised in later meetings. |
+| **Notes** | Summary, notes by topic, decisions and checked action items, written by Gemma 4 through Ollama. Templates for stand-ups, one-on-ones, interviews and client calls. Your typed notes come first and the model fills in the details. |
+| **Edit** | Double-click any line of the notes to change it. Word fixes are remembered for later meetings. |
+| **Find** | Search across titles, notes and transcripts. All open action items in one place, filtered to yours. |
+| **Import** | Drop in recordings you already have: WAV, MP3, M4A, AIFF, CAF or FLAC. |
 
-## Layout
+<table>
+  <tr>
+    <td width="50%"><img src="docs/images/transcript.png" alt="Transcript with speakers"><br><sub>Transcript with speakers, and a prompt to name them</sub></td>
+    <td width="50%"><img src="docs/images/action-items.png" alt="Action items across meetings"><br><sub>Action items across meetings, each linked to its moment</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/images/record.png" alt="Record screen"><br><sub>Record, or import an audio file</sub></td>
+    <td width="50%"><img src="docs/images/setup.png" alt="First-run setup"><br><sub>One-time setup: language, permissions, downloads</sub></td>
+  </tr>
+</table>
+
+## Install
+
+1. Download **Off the Record &lt;version&gt;.dmg** from [Releases](https://github.com/jatsharma/off-the-record/releases/latest),
+   open it and drag **Off the Record** into Applications.
+2. Open it. Builds are not notarized by Apple yet, so the first time macOS says it cannot check the app:
+   click **Done**, open **System Settings → Privacy & Security**, scroll down and click **Open Anyway**
+   next to Off the Record. You do this once; later versions open normally.
+3. The setup assistant asks what language your meetings are in, gets the microphone and system-audio
+   permissions, and downloads what it needs, once:
+
+| Download | Size | When |
+| --- | --- | --- |
+| Speech models (Parakeet and the speaker model) | 520 MB | always |
+| Hinglish model ([Apex, Core ML](https://huggingface.co/jatsharma/whisper-hinglish-apex-coreml)) | 1.6 GB | Hindi and English meetings |
+| [Ollama](https://ollama.com), the official build, checksum-verified | 190 MB | only if Ollama is not installed |
+| Notes model: Gemma 4 (`gemma4:e4b`, or `gemma4:e2b` on Macs with less than 16 GB) | 6.6 GB / 4.6 GB | always |
+
+**Requirements:** macOS 15 or later on Apple Silicon. 16 GB of memory recommended; 8 GB works with the
+lighter notes model.
+
+## Privacy
+
+- Everything is processed on your Mac: recording, transcription, speaker separation and the notes.
+- Network use is limited to downloading models from Hugging Face, the Ollama runtime from GitHub and the
+  notes model from the Ollama registry. Nothing is uploaded.
+- While recording, the app can read text on your screen every 20 seconds (only when the screen changed)
+  so names on shared slides are spelled correctly. The text stays with the meeting on your Mac; turn it
+  off in Settings → Vocabulary.
+- Your data lives in `~/Library/Application Support/Off the Record`: one SQLite database and one audio
+  file per meeting. Delete a meeting, its audio or its transcript at any time; Settings → Storage
+  clears the audio of older meetings in one click.
+
+## How it works
 
 ```
-NotesApp/
-  App/       NotesApp.swift (entry, menus, menu bar), MeetingStore.swift (job queue, pipeline, deletes,
-             voices, action items), RecordingController (start/stop/pause, live captions), ModelCatalog,
-             Permissions, AudioPlayer, Notifier, GlobalHotKey, AutoRecord/Screenshots (dev hooks)
-  Capture/   AudioRecorder.swift (ScreenCaptureKit mic + system audio, two-channel aligner, WAV writer),
-             ScreenReader.swift (on-screen text for the glossary)
-  Speech/    SpeechEngine.swift (Parakeet/Whisper/Qwen3/Mix, diarization, echo gate, voice matching),
-             HinglishWhisper.swift (Apex and Tara through WhisperKit)
-  LLM/       OllamaClient.swift (local HTTP, auto-start, pull, streaming chat), Summarizer.swift (settings + prompt),
-             NotesPipeline.swift (tidy transcript, part-by-part notes, checked action items),
-             TranscriptCleaner.swift (glossary clean-up pass), Vocabulary.swift (glossary, learned corrections)
-  Store/     Database.swift (GRDB, migrations), Models.swift (Meeting, Segment)
-  UI/        ContentView (sidebar), RecordView, MeetingDetailView, ActionItemsView, SetupView,
-             SettingsView (General, Prompt, Models, Storage, Voices), Theme, Observers
-project.yml  XcodeGen spec; Makefile wraps gen/build/run/setup
+ microphone ─┐                       ┌─ You ──────────────┐
+             ├─ two-channel WAV ─────┤                    ├─ transcript ─ clean-up ─ notes ─ action items
+ call audio ─┘   (echo removed)      └─ diarized speakers ┘   (Parakeet / Apex)   (Gemma 4 via Ollama)
 ```
 
-## Speech engines
+The details (the echo gate, the Mix engine, why the transcript goes first in the prompt, where each
+file lives) are in [docs/how-it-works.md](docs/how-it-works.md).
 
-Settings → Speech recognition switches between three engines. Measured on the same real
-32-minute Hindi-English meeting on an M1 Pro, models already downloaded:
+## Build from source
 
-| Engine | Transcribe + diarize | Words captured | Hinglish handling |
-| --- | --- | --- | --- |
-| Parakeet TDT 0.6b v3 (default) | 70 s | 3,144 | Hindi comes out as phonetic English; best for English meetings |
-| Whisper large-v3-turbo | 7 min | 1,461 (391 Devanagari) | Flips language per chunk and drops about half the speech; forcing `en` replaces Hindi with "foreign" |
-| Qwen3-ASR 0.6B | 17 min | 6,070 (1,890 Devanagari) | Proper code-switched output: Hindi in Devanagari, English terms in Latin script. Occasional repetition loops (collapsed automatically) and misdetected short chunks |
+Needs Xcode 26 and [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`brew install xcodegen`).
 
-Qwen3 has a 30-second window and no timestamps, so the app diarizes first and transcribes each
-speaker turn on its own; timing and speaker labels come from the diarizer. On two-channel
-recordings your side is cut into speech runs and labelled You. Chunks that are mostly silence are
-skipped, lines in scripts you do not use (Settings → "Scripts your meetings use", default Latin +
-Devanagari) are dropped, and overlapping duplicate turns are removed. Use it for Hindi or Hinglish
-meetings; it runs at roughly 2x real time. Parakeet for English.
+```bash
+git clone https://github.com/jatsharma/off-the-record.git
+cd off-the-record
+make run        # fetches FluidAudio, generates the Xcode project, builds and opens the app
+```
 
-### Hinglish: Apex and the Mix engine (default)
+`make gen` generates `NotesApp.xcodeproj` to open in Xcode. Debug builds accept developer launch
+options: `--import <file>`, `--auto-record <seconds>`, `--summarize <meeting id>`,
+`--download-model apex`, `--screenshots <folder>`.
 
-`make hinglish-models` adds Apex (a Whisper turbo fine-tune that writes romanized Hinglish) and
-Tara. Apex is the only engine that captures Hindi-heavy speech, but it turns English terms and
-numbers into Hinglish ("Confidence par" for Confluence, "13 thousand" for thirteen screens) and
-sometimes drops English sentences. Parakeet keeps English exact but turns Hindi into
-English-sounding nonsense. The **Mix** engine reads every speaker turn with Apex and with
-Parakeet, and keeps Parakeet's reading only where Apex's has almost no Hindi words and Parakeet's
-is almost all dictionary English. On a 31-minute technical meeting, Mix + gemma4:e4b notes covered
-about 22 of 33 checked facts with about 3 errors (Apex + qwen3.5:4b: about 13 with 8 errors), and
-a 94-second Hindi-heavy call stayed fully correct. Mix is the default when Apex is installed.
+**Signing.** macOS ties the microphone and system-audio permissions to the app's signature, so ad-hoc
+builds have to be allowed again after every build. Create a local signing certificate once:
 
-Both engines normalise a quiet microphone channel before recognition and suppress the call's echo
-in it, so a laptop mic across the desk still yields your lines. The echo gate drops mic audio that is
-6 dB or more under the call (including echo arriving up to 60 ms late). It measures how strongly
-the call leaks into the mic on each recording; with headphones (no leak) the mic is left alone, so
-you talking over the other side is kept.
+```bash
+sh scripts/make-signing-cert.sh
+```
 
-Qwen3 was removed from FluidAudio upstream in June 2026 (#676). `scripts/fluidaudio-qwen3.patch`
-restores it into the vendored copy and ports its downloader to the current API.
+`make` picks the best identity automatically: a Developer ID, then that certificate, then ad-hoc.
 
-## Settings
+**Releases.**
 
-- **Model** – any Ollama tag. `gemma4:e4b` by default (about 6.5 GB of memory while writing); `qwen3.5:4b` is lighter (about 4 GB) but got more facts wrong on a 31-minute test meeting; `gemma4:12b` needs about 10 GB.
-- **Context window** – the most the app will ask for, 32k tokens by default (roughly 90 minutes of
-  speech). Each meeting uses the smallest of 8k/16k/32k that fits it, the same size for every call on
-  that meeting: gemma4 is reloaded (about 5 s) whenever the size changes.
-- **Notes prompt** – the instructions sent to the model. Placeholders `{{title}}`, `{{date}}`, `{{days}}`,
-  `{{glossary}}`. The transcript always goes first, ahead of the instructions; the action-item step
-  starts with the same text, so Ollama reuses that work (27 s of prompt processing down to 0.2 s on a
-  32-minute meeting).
-- **Read the screen** – on by default: while recording, the screen's text is read every 20 s (only when
-  the screen changed) and its names and terms join the glossary. The clean-up pass only sends lines
-  that hold a word sounding like a glossary term.
+```bash
+make dmg                                  # signed Release build → dist/Off the Record <version>.dmg
+NOTARY_PROFILE=<profile> make notarize    # with a Developer ID: notarize and staple
+```
 
-## Not included on purpose
+## Contributing
 
-Calendar, email, cloud backends, licensing, auto-update. The store is a plain SQLite file, so any of these can be
-added later without migrating data.
+Issues and pull requests are welcome. When reporting a bug, include **Help → Copy Diagnostics** from the
+app: versions, settings and recent errors, without any meeting content. For larger changes, open an issue
+first so we can agree on the approach.
+
+## License
+
+[MIT](LICENSE). Off the Record builds on FluidAudio, WhisperKit, GRDB, Ollama and openly licensed models
+(Parakeet, pyannote and WeSpeaker, Silero VAD, Apex, Tara and Gemma); see
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), also under Help → Acknowledgements in the app.
