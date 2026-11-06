@@ -34,7 +34,7 @@ clean:
 distclean: clean
 	rm -rf Vendor
 
-setup:          ## One-time: Ollama + Qwen 3.5 4B (about 3.3 GB)
+setup:          ## One-time: Ollama + Gemma 4 e4b (about 6.6 GB)
 	brew list ollama >/dev/null 2>&1 || brew install ollama
 	ollama serve >/dev/null 2>&1 & sleep 2; ollama pull gemma4:e4b
 

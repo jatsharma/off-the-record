@@ -81,7 +81,7 @@ struct MeetingDetailView: View {
             PipelineStrip(meeting: meeting, progress: store.progress[meeting.id], fraction: store.fraction[meeting.id],
                           stageStarted: store.stageStarted[meeting.id], hasTranscript: !observer.segments.isEmpty,
                           retryTranscribe: { store.retranscribe(meeting) },
-                          retryNotes: { Task { await store.summarize(meetingId: meeting.id) } })
+                          retryNotes: { store.queueSummarize(meetingId: meeting.id) })
             UnderlineTabs(items: [
                 .init(value: Tab.notes, title: "Notes", detail: nil),
                 .init(value: Tab.transcript, title: "Transcript", detail: observer.segments.isEmpty ? nil : "\(observer.segments.count)"),
@@ -258,7 +258,7 @@ struct MeetingDetailView: View {
             .disabled(meeting.audioPath == nil)
 
             Button {
-                Task { await store.summarize(meetingId: meeting.id) }
+                store.queueSummarize(meetingId: meeting.id)
             } label: { Label("Regenerate notes", systemImage: "arrow.clockwise") }
             .help("Write the notes again with the current prompt and model")
             .disabled(observer.segments.isEmpty || meeting.status == .summarizing || meeting.status == .transcribing)

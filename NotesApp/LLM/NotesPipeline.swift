@@ -110,25 +110,31 @@ enum NotesPipeline {
         """
     }
 
-    /// The template's notes prompt with the part notes in place of the transcript.
-    static func combinePrompt(template prompt: String, partNotes: [(range: String, notes: String)]) -> String {
+    /// The part notes, in order, followed by the template's notes instructions.
+    static func combinePrompt(instructions: String, partNotes: [(range: String, notes: String)]) -> String {
         let body = partNotes.enumerated().map { "### Part \($0.offset + 1) (\($0.element.range))\n\($0.element.notes)" }
             .joined(separator: "\n\n")
-        let note = """
-        This meeting was long, so it was first written up part by part. Those part notes are given below, in \
-        order, instead of the raw transcript. Combine them into the notes: merge repeated points, keep every \
-        specific (names, numbers, rules and conditions, times like [12:56]), and drop nothing that matters.
+        return """
+        This meeting was long, so it was first written up part by part. The part notes below, in order, \
+        take the place of the transcript.
 
-        """
-        guard let range = prompt.range(of: "Transcript:", options: .backwards) else { return prompt + "\n\n" + note + body }
-        return String(prompt[..<range.lowerBound]) + note + "Part notes:\n" + body
+        Part notes:
+        \(body)
+
+        ---
+
+        Combine the part notes into the meeting notes: merge repeated points, keep every specific (names, \
+        numbers, rules and conditions, times like [12:56]), and drop nothing that matters.
+
+        """ + instructions.replacingOccurrences(of: "the transcript above", with: "the part notes above")
     }
 
     // MARK: 3. Action items, checked
 
+    /// Starts with the same transcript block as the notes prompt, so Ollama reuses that work.
     static func actionPrompt(_ turns: [Turn], speakers: [String], days: String) -> String {
-        """
-        From this meeting transcript, list every task that someone agreed to do or was asked to do. Not \
+        Summarizer.transcriptBlock(transcript(turns)) + """
+        From the meeting transcript above, list every task that someone agreed to do or was asked to do. Not \
         decisions, facts or discussion: only work someone has to do.
         One task per line, as JSON: {"task": "...", "owner": "...", "when": "...", "time": "mm:ss"}
         - task: what has to be done, in English, short and concrete. One task per line; if one sentence \
@@ -141,9 +147,6 @@ enum NotesPipeline {
         - time: the time of the transcript line where the task was said.
         Output only the JSON lines, nothing else. If there are no tasks, output nothing.
         \(days)
-
-        Transcript:
-        \(transcript(turns))
         """
     }
 
@@ -202,7 +205,7 @@ enum NotesPipeline {
         return notes + "\n\n" + section.joined(separator: "\n")
     }
 
-    /// "aaj"/"today" → that day, "kal"/"tomorrow" → the next, "parson" → two days on, "next week" → a
+    /// "aaj"/"abhi"/"today" → that day, "kal"/"tomorrow" → the next, "parson" → two days on, "next week" → a
     /// week on; anything else (an explicit date) is kept as said. Tasks are future work, so "kal" and
     /// "parson" point forward here.
     static func resolve(_ when: String, from date: Date) -> String {
@@ -214,7 +217,8 @@ enum NotesPipeline {
         }
         if w.contains("parson") || w.contains("parso") || w.contains("परसों") || w.contains("day after tomorrow") { return day(2) }
         if w.contains("kal") || w.contains("कल") || w.contains("tomorrow") { return day(1) }
-        if w.contains("aaj") || w.contains("आज") || w.contains("today") { return day(0) }
+        if w.contains("aaj") || w.contains("आज") || w.contains("today") || w.contains("abhi") || w.contains("अभी")
+            || w == "now" || w.contains("right away") { return day(0) }
         if w.contains("week") || w.contains("hafte") || w.contains("हफ्ते") { return day(7, by: true) }
         return when.trimmingCharacters(in: .whitespaces)
     }

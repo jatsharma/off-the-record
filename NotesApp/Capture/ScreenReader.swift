@@ -17,8 +17,14 @@ final class ScreenReader {
         guard Vocabulary.readScreenEnabled else { return }
         task = Task.detached(priority: .utility) {
             var last = ""
+            var lastThumbnail: [UInt8] = []
             while !Task.isCancelled {
-                if let text = await Self.readScreen(), Self.differs(text, from: last) {
+                // A 64×40 grey thumbnail first: when the screen has not changed, the full-resolution
+                // capture and OCR would only read the same text again, so they are skipped.
+                let thumbnail = await Self.thumbnail()
+                let changed = thumbnail.map { Self.changed($0, from: lastThumbnail) } ?? true
+                if let thumbnail { lastThumbnail = thumbnail }
+                if changed, let text = await Self.readScreen(), Self.differs(text, from: last) {
                     last = text
                     let row = ScreenText(id: UUID().uuidString, meetingId: meetingId, capturedAt: Date(), text: text)
                     _ = try? await AppDatabase.shared.pool.write { try row.insert($0) }
@@ -33,21 +39,43 @@ final class ScreenReader {
         task = nil
     }
 
+    nonisolated private static func capture(width: Int?, height: Int?) async throws -> CGImage? {
+        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        guard let display = content.displays.first else { return nil }
+        let mine = content.applications.filter { $0.processID == ProcessInfo.processInfo.processIdentifier }
+        let filter = SCContentFilter(display: display, excludingApplications: mine, exceptingWindows: [])
+        let config = SCStreamConfiguration()
+        config.width = width ?? display.width * 2
+        config.height = height ?? display.height * 2
+        config.showsCursor = false
+        return try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
+    }
+
     nonisolated private static func readScreen() async -> String? {
-        do {
-            let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-            guard let display = content.displays.first else { return nil }
-            let mine = content.applications.filter { $0.processID == ProcessInfo.processInfo.processIdentifier }
-            let filter = SCContentFilter(display: display, excludingApplications: mine, exceptingWindows: [])
-            let config = SCStreamConfiguration()
-            config.width = display.width * 2
-            config.height = display.height * 2
-            config.showsCursor = false
-            let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
-            return try recognize(image)
-        } catch {
-            return nil
+        guard let image = try? await capture(width: nil, height: nil) else { return nil }
+        return try? recognize(image)
+    }
+
+    /// Grey levels of a 64×40 capture of the screen.
+    nonisolated private static func thumbnail() async -> [UInt8]? {
+        let w = 64, h = 40
+        guard let image = try? await capture(width: w, height: h) else { return nil }
+        var pixels = [UInt8](repeating: 0, count: w * h)
+        let drawn = pixels.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(data: buffer.baseAddress, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w,
+                                          space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return true
         }
+        return drawn ? pixels : nil
+    }
+
+    /// More than 0.5% of thumbnail pixels moved noticeably: a slide change, a scroll, a new window.
+    /// A ticking clock or a blinking cursor stays under that.
+    nonisolated private static func changed(_ a: [UInt8], from b: [UInt8]) -> Bool {
+        guard a.count == b.count else { return true }
+        let moved = zip(a, b).reduce(0) { $0 + (abs(Int($1.0) - Int($1.1)) > 8 ? 1 : 0) }
+        return Double(moved) / Double(a.count) > 0.005
     }
 
     nonisolated private static func recognize(_ image: CGImage) throws -> String {

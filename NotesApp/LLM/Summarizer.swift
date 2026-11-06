@@ -24,7 +24,7 @@ enum AppSettings {
     """
 
     static let defaultPrompt = """
-    Write meeting notes from the transcript below.
+    Write meeting notes from the transcript above.
 
     Structure (omit a section if there is nothing for it):
     ## Summary
@@ -47,9 +47,6 @@ enum AppSettings {
     are no action items, omit the section. Never write "[?]" or comment on transcript quality.
     {{glossary}}
     Meeting: {{title}} on {{date}}
-
-    Transcript:
-    {{transcript}}
     """
 
     /// Mix (Apex + Parakeet) when the Hinglish models are installed, else Parakeet.
@@ -79,10 +76,12 @@ enum Summarizer {
         }.joined(separator: "\n")
     }
 
-    /// The glossary goes where the template says {{glossary}}; templates saved before that
-    /// placeholder existed get it just above the transcript.
-    static func buildPrompt(meeting: Meeting, segments: [Segment], glossary: [String] = []) -> String {
-        buildPrompt(meeting: meeting, transcript: transcriptText(segments), glossary: glossary)
+    /// The transcript opens every prompt that reads it, ahead of the instructions. The notes and the
+    /// action-item step then start with identical text, and Ollama reuses the first call's work for
+    /// the second (on a 32-minute meeting its prompt processing went from 27 s to 0.2 s). Small models
+    /// also follow instructions better when they come after a long document.
+    static func transcriptBlock(_ transcript: String) -> String {
+        "Meeting transcript:\n" + transcript + "\n\n---\n\n"
     }
 
     static func glossaryBlock(_ glossary: [String]) -> String {
@@ -91,24 +90,34 @@ enum Summarizer {
     }
 
     static func buildPrompt(meeting: Meeting, transcript: String, glossary: [String] = []) -> String {
-        let block = glossaryBlock(glossary)
+        transcriptBlock(transcript) + instructions(meeting: meeting, glossary: glossary)
+    }
+
+    /// The notes template with its placeholders filled. The glossary and the relative days go where
+    /// the template says {{glossary}} and {{days}}, or at the end. Templates saved while the
+    /// transcript still came last lose their {{transcript}} slot (it is sent first now).
+    static func instructions(meeting: Meeting, glossary: [String]) -> String {
         var template = AppSettings.prompt
+            .replacingOccurrences(of: "Transcript:\n{{transcript}}", with: "")
+            .replacingOccurrences(of: "{{transcript}}", with: "")
+            .replacingOccurrences(of: "the transcript below", with: "the transcript above")
+        let block = glossaryBlock(glossary)
         if template.contains("{{glossary}}") {
             template = template.replacingOccurrences(of: "{{glossary}}", with: block)
-        } else if !block.isEmpty, let range = template.range(of: "Transcript:") {
-            template.insert(contentsOf: block + "\n", at: range.lowerBound)
+        } else if !block.isEmpty {
+            template += "\n" + block
         }
         let days = relativeDays(from: meeting.createdAt)
         if template.contains("{{days}}") {
             template = template.replacingOccurrences(of: "{{days}}", with: days)
-        } else if let range = template.range(of: "Transcript:") {
-            template.insert(contentsOf: days + "\n\n", at: range.lowerBound)
+        } else {
+            template += "\n" + days
         }
         return template
             .replacingOccurrences(of: "{{title}}", with: meeting.title)
             .replacingOccurrences(of: "{{date}}", with: meeting.createdAt.formatted(
                 .dateTime.weekday(.wide).day().month(.wide).year().hour().minute()))
-            .replacingOccurrences(of: "{{transcript}}", with: transcript)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Hindi relative days resolved to dates, so the model never does calendar arithmetic (asked to,

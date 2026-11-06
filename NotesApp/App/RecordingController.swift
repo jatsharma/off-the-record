@@ -16,6 +16,12 @@ final class RecordingController: ObservableObject {
     init(recorder: AudioRecorder, store: MeetingStore) {
         self.recorder = recorder
         self.store = store
+        // Capture ended on its own: stop properly so the audio so far is saved and transcribed.
+        recorder.onInterrupted = { [weak self] failure in
+            guard let self, self.recorder.isRecording, !self.busy else { return }
+            self.toggle()
+            self.error = "Recording stopped unexpectedly (\(failure.localizedDescription)). The audio up to that point was kept."
+        }
     }
 
     var isRecording: Bool { recorder.isRecording }
@@ -82,9 +88,10 @@ final class RecordingController: ObservableObject {
                     if Permissions.microphone == .unknown { _ = await Permissions.requestMicrophone() }
                     let meeting = try store.createMeeting(title: title)
                     current = meeting
-                    try await recorder.start(to: meeting.audioURL!)
+                    let captions = UserDefaults.standard.object(forKey: "captions.live") as? Bool ?? true
+                    try await recorder.start(to: meeting.audioURL!, liveSamples: captions)
                     screenReader.start(meetingId: meeting.id)
-                    if UserDefaults.standard.object(forKey: "captions.live") as? Bool ?? true { startCaptions() }
+                    if captions { startCaptions() }
                 }
             } catch {
                 self.error = error.localizedDescription

@@ -152,7 +152,7 @@ struct PromptSettings: View {
             } header: {
                 Text("What the model is asked to write")
             } footer: {
-                Text("Placeholders: {{title}}, {{date}}, {{days}} (what aaj, kal and parson mean for this meeting), {{glossary}}, {{transcript}}. A fixed system line also tells the model to stay inside the transcript and never invent.")
+                Text("Placeholders: {{title}}, {{date}}, {{days}} (what aaj, kal and parson mean for this meeting), {{glossary}}. The transcript is always sent first, before these instructions, so refer to it as \"the transcript above\". A fixed system line also tells the model to stay inside the transcript and never invent.")
             }
             Section {
                 HStack {

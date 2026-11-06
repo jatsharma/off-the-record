@@ -28,7 +28,7 @@ enum AutoRecord {
     static func run(recorder: AudioRecorder, store: MeetingStore, select: @escaping (String) -> Void) async {
         if let id = summarizeId {
             select(id)
-            await store.summarize(meetingId: id)
+            await store.enqueue(id) { await $0.summarize(meetingId: id) }.value
         }
         if let path = importPath {
             do {

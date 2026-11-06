@@ -32,8 +32,12 @@ final class AudioRecorder: ObservableObject {
     private var startedAt: Date?
     private var pausedAt: Date?
     private var pausedTotal: TimeInterval = 0
+    /// Called when capture ends on its own (permission revoked, audio device gone). The recording
+    /// is still open; the owner should stop it so the file is closed and the audio so far kept.
+    var onInterrupted: ((Error) -> Void)?
 
-    func start(to url: URL) async throws {
+    /// - liveSamples: keep a mixed copy of the audio for live captions (`takeLiveSamples`).
+    func start(to url: URL, liveSamples: Bool = false) async throws {
         guard !isRecording else { throw RecorderError.alreadyRecording }
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
         guard let display = content.displays.first else { throw RecorderError.noDisplay }
@@ -50,6 +54,13 @@ final class AudioRecorder: ObservableObject {
         config.minimumFrameInterval = CMTime(value: 1, timescale: 1)
 
         let sink = try CaptureSink(url: url)
+        sink.keepsLive = liveSamples
+        sink.onStopped = { [weak self] error in
+            Task { @MainActor in
+                guard let self, self.isRecording else { return }
+                self.onInterrupted?(error)
+            }
+        }
         sink.onLevel = { [weak self] value in Task { @MainActor in self?.level = value } }
         sink.onSystemLevel = { [weak self] value in Task { @MainActor in self?.systemLevel = value } }
         let stream = SCStream(filter: filter, configuration: config, delegate: sink)
@@ -96,7 +107,9 @@ final class AudioRecorder: ObservableObject {
         guard isRecording, let stream, let sink else { throw RecorderError.notRecording }
         timer?.invalidate()
         timer = nil
-        try await stream.stopCapture()
+        // Stopping fails when the stream already ended on its own; the file must still be closed,
+        // or Stop would fail on every press and the recording would never be saved.
+        do { try await stream.stopCapture() } catch { NSLog("Stopping capture: \(error.localizedDescription)") }
         let duration = sink.finish()
         self.stream = nil
         self.sink = nil
@@ -117,6 +130,11 @@ final class CaptureSink: NSObject, SCStreamOutput, SCStreamDelegate {
     let queue = DispatchQueue(label: "io.stackera.notes.capture")
     var onLevel: ((Float) -> Void)?
     var onSystemLevel: ((Float) -> Void)?
+    var onStopped: ((Error) -> Void)?
+    /// Off unless live captions are on: nothing else empties the live buffer.
+    var keepsLive = false
+    /// Live captions read every 12 s; more than a minute waiting means they fell behind.
+    private let liveLimit = 60 * 16_000
 
     private let file: AVAudioFile
     private let monoFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false)!
@@ -167,6 +185,7 @@ final class CaptureSink: NSObject, SCStreamOutput, SCStreamDelegate {
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
         NSLog("Capture stream stopped: \(error.localizedDescription)")
+        onStopped?(error)
     }
 
     func finish() -> TimeInterval {
@@ -223,17 +242,22 @@ final class CaptureSink: NSObject, SCStreamOutput, SCStreamDelegate {
         guard !left.isEmpty,
               let buffer = AVAudioPCMBuffer(pcmFormat: stereoFormat, frameCapacity: AVAudioFrameCount(left.count)),
               let data = buffer.floatChannelData else { return }
-        var mixed = [Float](repeating: 0, count: left.count)
+        var mixed = keepsLive ? [Float](repeating: 0, count: left.count) : []
         for i in 0..<left.count {
             data[0][i] = max(-1, min(1, left[i]))
             data[1][i] = max(-1, min(1, right[i]))
-            mixed[i] = max(-1, min(1, left[i] + right[i]))
+            if keepsLive { mixed[i] = max(-1, min(1, left[i] + right[i])) }
         }
         buffer.frameLength = AVAudioFrameCount(left.count)
         do {
             try file.write(from: buffer)
             framesWritten += Int64(left.count)
-            liveLock.lock(); live.append(contentsOf: mixed); liveLock.unlock()
+            if keepsLive {
+                liveLock.lock()
+                live.append(contentsOf: mixed)
+                if live.count > liveLimit { live.removeFirst(live.count - liveLimit) }
+                liveLock.unlock()
+            }
         } catch {
             NSLog("WAV write failed: \(error.localizedDescription)")
         }

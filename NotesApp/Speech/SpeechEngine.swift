@@ -177,13 +177,12 @@ actor SpeechEngine {
         guard let diarizer else { throw SpeechError.notLoaded }
 
         status("Reading audio")
-        let channels = try Self.loadChannels(file)
+        var channels = try Self.loadChannels(file)
         let duration = Double(channels[0].count) / 16_000
 
         // Two-channel recording (left = you, right = the call): transcribe each side on its own.
         if channels.count == 2, engine == .parakeet, let asr {
-            let mic = Self.normalize(Self.suppressEcho(mic: channels[0], system: channels[1]))
-            let call = Self.normalize(channels[1])
+            let (mic, call) = Self.sides(&channels)
             report(0, "Transcribing your side")
             await asr.setWindowHandler { p in report(0.45 * Double(p.index + 1) / Double(max(1, p.windowCount)), "Transcribing your side") }
             var state = try TdtDecoderState(decoderLayers: await asr.decoderLayerCount)
@@ -206,23 +205,26 @@ actor SpeechEngine {
             return TranscriptResult(lines: lines, speakerVectors: vectors)
         }
 
-        // Mono recording or imported file: mix channels and run the single-track pipeline.
-        let samples = channels.count == 1 ? channels[0] : Self.mixDown(channels)
+        if engine.readsByTurns, channels.count == 2 {
+            let (mic, call) = Self.sides(&channels)
+            t = Date()
+            defer { NSLog("[timing] call side (speakers + text): %.1fs", Date().timeIntervalSince(t)) }
+            let mine = try await transcribeByTurns(samples: mic, duration: duration, fixedSpeaker: "You",
+                                                   knownVoices: [], context: context, status: status)
+            NSLog("[timing] your side (text): %.1fs", Date().timeIntervalSince(t)); t = Date()
+            let theirs = try await transcribeByTurns(samples: call, duration: duration, fixedSpeaker: nil,
+                                                     knownVoices: knownVoices, singleLabel: "Them", context: context, status: status)
+            let lines = (mine.lines + theirs.lines).sorted { $0.start < $1.start }
+            return TranscriptResult(lines: lines, speakerVectors: theirs.speakerVectors)
+        }
+
+        // Mono recording or imported file: mix channels and run the single-track pipeline. Quiet files
+        // are brought up first, or the silence check would skip their speech.
+        var samples = channels.count == 1 ? channels.removeFirst() : Self.mixDown(channels)
+        channels = []
+        Self.normalize(&samples)
 
         if engine.readsByTurns {
-            if channels.count == 2 {
-                let mic = Self.normalize(Self.suppressEcho(mic: channels[0], system: channels[1]))
-                let call = Self.normalize(channels[1])
-                t = Date()
-                defer { NSLog("[timing] call side (speakers + text): %.1fs", Date().timeIntervalSince(t)) }
-                let mine = try await transcribeByTurns(samples: mic, duration: duration, fixedSpeaker: "You",
-                                                       knownVoices: [], context: context, status: status)
-                NSLog("[timing] your side (text): %.1fs", Date().timeIntervalSince(t)); t = Date()
-                let theirs = try await transcribeByTurns(samples: call, duration: duration, fixedSpeaker: nil,
-                                                         knownVoices: knownVoices, singleLabel: "Them", context: context, status: status)
-                let lines = (mine.lines + theirs.lines).sorted { $0.start < $1.start }
-                return TranscriptResult(lines: lines, speakerVectors: theirs.speakerVectors)
-            }
             return try await transcribeByTurns(samples: samples, duration: duration, fixedSpeaker: nil,
                                                knownVoices: knownVoices, singleLabel: nil, context: context, status: status)
         }
@@ -315,25 +317,28 @@ actor SpeechEngine {
         }
         var names: [String: String] = [:]
         var vectors: [String: [Float]] = [:]
+        let centroids = Dictionary(uniqueKeysWithValues: order.map { ($0, Vectors.mean(byCluster[$0] ?? [])) })
+        // Known voices go to the closest clusters first, so a cluster that happens to speak first
+        // cannot take a voice that matches a later one better.
+        var pairs: [(cluster: String, name: String, score: Float)] = []
+        for cluster in order where !(centroids[cluster] ?? []).isEmpty {
+            for voice in knownVoices {
+                let score = Vectors.cosine(voice.vector, centroids[cluster]!)
+                if score >= 0.62 { pairs.append((cluster, voice.name, score)) }
+            }
+        }
         var taken = Set<String>()
+        for pair in pairs.sorted(by: { $0.score > $1.score }) where names[pair.cluster] == nil && !taken.contains(pair.name) {
+            names[pair.cluster] = pair.name
+            taken.insert(pair.name)
+        }
         var unknownIndex = 0
-        let unknownCount = order.count
+        for cluster in order where names[cluster] == nil {
+            unknownIndex += 1
+            names[cluster] = (singleLabel != nil && order.count == 1) ? singleLabel! : "Speaker \(unknownIndex)"
+        }
         for cluster in order {
-            let centroid = Vectors.mean(byCluster[cluster] ?? [])
-            var name: String? = nil
-            if !centroid.isEmpty {
-                let best = knownVoices.filter { !taken.contains($0.name) }
-                    .map { ($0.name, Vectors.cosine($0.vector, centroid)) }
-                    .max { $0.1 < $1.1 }
-                if let best, best.1 >= 0.62 { name = best.0 }
-            }
-            if name == nil {
-                unknownIndex += 1
-                name = (singleLabel != nil && unknownCount == 1) ? singleLabel! : "Speaker \(unknownIndex)"
-            }
-            taken.insert(name!)
-            names[cluster] = name!
-            if !centroid.isEmpty { vectors[name!] = centroid }
+            if let name = names[cluster], let centroid = centroids[cluster], !centroid.isEmpty { vectors[name] = centroid }
         }
         return (names, vectors)
     }
@@ -351,22 +356,59 @@ actor SpeechEngine {
         return out.map { max(-1, min(1, $0)) }
     }
 
-    /// Zeroes 20 ms frames of the microphone where the call is clearly the louder source,
-    /// so the far side's echo through speakers is not transcribed as "You".
+    /// The two sides of a recording, ready for recognition: the call's echo removed from the mic and
+    /// both brought to a working level. Moves the channels out instead of copying (an hour is 230 MB each).
+    static func sides(_ channels: inout [[Float]]) -> (mic: [Float], call: [Float]) {
+        var call = channels.removeLast()
+        var mic = channels.removeLast()
+        suppressEcho(mic: &mic, system: call)
+        normalize(&mic)
+        normalize(&call)
+        return (mic, call)
+    }
+
     static func suppressEcho(mic: [Float], system: [Float]) -> [Float] {
-        let frame = 320
         var out = mic
-        var i = 0
-        while i < min(mic.count, system.count) {
-            let end = min(i + frame, mic.count, system.count)
-            var m: Float = 0, s: Float = 0
-            for j in i..<end { m += mic[j] * mic[j]; s += system[j] * system[j] }
-            if s > 0.0001 * Float(end - i), s > 4 * m {      // call at least 6 dB louder than mic
-                for j in i..<end { out[j] = 0 }
-            }
-            i = end
-        }
+        suppressEcho(mic: &out, system: system)
         return out
+    }
+
+    /// Zeroes 20 ms frames of the microphone where the call is clearly louder, so the far side's echo
+    /// through the speakers is not transcribed as "You". The reference is the call's loudest frame in
+    /// the last 60 ms, which also catches the echo arriving late (the same-frame check let about a third
+    /// of an echoed sentence through on a laptop-speaker call). How strongly the call leaks into the mic
+    /// is measured per recording: below about -35 dB the mic does not hear the call (headphones), so
+    /// there is no echo to remove and only near-silent frames go; you talking over the other side is
+    /// kept. Through speakers, echo and your own voice overlap in level (echo about -16 dB under the
+    /// call, you talking over it -11 to -15 dB), so the mic must be 6 dB under the call to be dropped.
+    static func suppressEcho(mic: inout [Float], system: [Float]) {
+        let frame = 320, lag = 3, active: Float = 0.0001           // call playing: above -40 dBFS
+        let n = min(mic.count, system.count) / frame
+        guard n > 0 else { return }
+        var m = [Float](repeating: 0, count: n), s = [Float](repeating: 0, count: n)
+        for k in 0..<n {
+            var a: Float = 0, b: Float = 0
+            for j in k * frame..<(k + 1) * frame { a += mic[j] * mic[j]; b += system[j] * system[j] }
+            m[k] = a / Float(frame); s[k] = b / Float(frame)
+        }
+        var recent = [Float](repeating: 0, count: n)
+        for k in 0..<n {
+            var top: Float = 0
+            for j in max(0, k - lag)...k { top = max(top, s[j]) }
+            recent[k] = top
+        }
+        var ratios = (0..<n).filter { recent[$0] > active }.map { m[$0] / recent[$0] }
+        // Mic at least 6 dB under the call, unless the measured leak says headphones (or too little
+        // call audio to tell, which keeps the 6 dB rule).
+        var threshold: Float = 0.25
+        if ratios.count >= 50 {
+            ratios.sort()
+            let coupling = ratios[ratios.count * 3 / 10]
+            if coupling < 0.0003 { threshold = 4 * max(0.00001, coupling) }
+        }
+        for k in 0..<n where recent[k] > active && m[k] <= threshold * recent[k] {
+            for j in k * frame..<(k + 1) * frame { mic[j] = 0 }
+        }
     }
 
     // MARK: - Turn-by-turn transcription (engines without timestamps, 30 s max input)
@@ -645,7 +687,8 @@ actor SpeechEngine {
     }
 
     /// Brings quiet channels up: scales so the loud 5% of 20 ms frames sit near -14 dBFS, gain capped at 30x.
-    static func normalize(_ samples: [Float]) -> [Float] {
+    /// In place: no second copy of an hour of audio.
+    static func normalize(_ samples: inout [Float]) {
         let frame = 320
         var rms: [Float] = []
         var i = 0
@@ -655,13 +698,13 @@ actor SpeechEngine {
             rms.append((e / Float(frame)).squareRoot())
             i += frame
         }
-        guard !rms.isEmpty else { return samples }
+        guard !rms.isEmpty else { return }
         let sorted = rms.sorted()
         let loud = sorted[Int(Double(sorted.count - 1) * 0.95)]
-        guard loud > 0.0005 else { return samples }
+        guard loud > 0.0005 else { return }
         let gain = min(30, 0.2 / loud)
-        guard gain > 1.1 else { return samples }
-        return samples.map { max(-1, min(1, $0 * gain)) }
+        guard gain > 1.1 else { return }
+        for i in samples.indices { samples[i] = max(-1, min(1, samples[i] * gain)) }
     }
 
     /// Scales one piece so its peak sits at 90% of full scale (gain capped at 30x), the level the

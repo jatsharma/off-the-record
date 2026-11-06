@@ -26,26 +26,34 @@ enum TranscriptCleaner {
     /// word the plain recognizer reading has (`Phonetic.supports`). A line that fails is redone
     /// from the plain reading only, and if it still fails, without the glossary at all.
     @MainActor
-    static func clean(_ lines: [Line], glossary: [String], client: OllamaClient, model: String,
+    static func clean(_ lines: [Line], glossary: [String], client: OllamaClient, model: String, contextTokens: Int,
                       progress: (Double) -> Void) async throws -> [Int: String] {
         var out: [Int: String] = [:]
         let byId = Dictionary(uniqueKeysWithValues: lines.map { ($0.id, $0) })
-        let batches = stride(from: 0, to: lines.count, by: 25).map { Array(lines[$0..<min($0 + 25, lines.count)]) }
+        let position = Dictionary(uniqueKeysWithValues: lines.enumerated().map { ($0.element.id, $0.offset) })
+        // Only lines the pass could change go to the model; the rest would come back as they are.
+        let todo = lines.filter { mayChange($0, glossary: glossary) }
+        NSLog("[clean-up] %d of %d lines can change", todo.count, lines.count)
+        let ask = { (batch: [Line], context: [Line], glossary: [String]) in
+            try await Self.ask(batch, context: context, glossary: glossary, client: client, model: model, contextTokens: contextTokens)
+        }
+        let batches = stride(from: 0, to: todo.count, by: 25).map { Array(todo[$0..<min($0 + 25, todo.count)]) }
         for (i, batch) in batches.enumerated() {
             progress(Double(i) / Double(max(1, batches.count)))
             // A little earlier context helps with words split across lines; it is not rewritten.
-            let before = batches.indices.contains(i - 1) ? Array(batches[i - 1].suffix(3)) : []
-            var result = try await ask(batch, context: before, glossary: glossary, client: client, model: model)
+            let first = batch.first.flatMap { position[$0.id] } ?? 0
+            let before = Array(lines[max(0, first - 3)..<first])
+            var result = try await ask(batch, before, glossary)
 
             var failing = batch.filter { line in result[line.id].map { !supported($0, by: line, glossary: glossary) } ?? false }
             if !failing.isEmpty {
                 let plainOnly = failing.map { Line(id: $0.id, speaker: $0.speaker, text: $0.text) }
-                result.merge(try await ask(plainOnly, context: [], glossary: glossary, client: client, model: model)) { $1 }
+                result.merge(try await ask(plainOnly, [], glossary)) { $1 }
                 failing = failing.filter { line in result[line.id].map { !supported($0, by: line, glossary: glossary) } ?? false }
             }
             if !failing.isEmpty {
                 let plainOnly = failing.map { Line(id: $0.id, speaker: $0.speaker, text: $0.text) }
-                result.merge(try await ask(plainOnly, context: [], glossary: [], client: client, model: model)) { $1 }
+                result.merge(try await ask(plainOnly, [], [])) { $1 }
             }
             for (id, text) in result {
                 guard let line = byId[id] else { continue }
@@ -67,13 +75,23 @@ enum TranscriptCleaner {
         return out
     }
 
+    /// Whether the pass can change a line. Lines in Latin script (Apex, Parakeet, Whisper) only take
+    /// glossary terms that sound like words already in them (`termsOnly`); a line with no such word
+    /// would come back unchanged, so it is not sent. Other scripts are rewritten whole.
+    static func mayChange(_ line: Line, glossary: [String]) -> Bool {
+        guard isLatin(line.text) else { return true }
+        guard !glossary.isEmpty else { return false }
+        let heard = Phonetic.keys(of: line.text)
+        return glossary.contains { Phonetic.supports(term: $0, heardKeys: heard) }
+    }
+
     @MainActor
     private static func ask(_ batch: [Line], context: [Line], glossary: [String],
-                            client: OllamaClient, model: String) async throws -> [Int: String] {
+                            client: OllamaClient, model: String, contextTokens: Int) async throws -> [Int: String] {
         var text = ""
         for try await token in client.chat(model: model, system: system,
                                            user: prompt(batch, context: context, glossary: glossary),
-                                           contextTokens: 8192, temperature: 0) {
+                                           contextTokens: contextTokens, temperature: 0) {
             text += token
         }
         return parse(text, expected: Set(batch.map(\.id)))

@@ -1,12 +1,13 @@
 import Foundation
 
 enum LLMError: LocalizedError {
-    case ollamaMissing, ollamaNotResponding, badResponse(Int)
+    case ollamaMissing, ollamaNotResponding, badResponse(Int), server(String)
     var errorDescription: String? {
         switch self {
         case .ollamaMissing: return "Ollama is not installed. Run `brew install ollama` (or `make setup`)."
         case .ollamaNotResponding: return "Ollama did not start. Try `ollama serve` in a terminal."
         case .badResponse(let code): return "Ollama returned HTTP \(code)."
+        case .server(let message): return "Ollama: \(message)"
         }
     }
 }
@@ -71,7 +72,7 @@ struct OllamaClient {
     /// Streams assistant tokens for one chat turn.
     func chat(model: String, system: String, user: String, contextTokens: Int,
               temperature: Double = 0.2) -> AsyncThrowingStream<String, Error> {
-        struct Chunk: Decodable { struct Message: Decodable { let content: String? }; let message: Message?; let done: Bool? }
+        struct Chunk: Decodable { struct Message: Decodable { let content: String? }; let message: Message?; let done: Bool?; let error: String? }
         return AsyncThrowingStream { continuation in
             let task = Task {
                 do {
@@ -90,9 +91,16 @@ struct OllamaClient {
                     ])
                     let (bytes, response) = try await Self.session.bytes(for: request)
                     let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-                    guard code == 200 else { throw LLMError.badResponse(code) }
+                    if code != 200 {
+                        // The body says why ("model requires more system memory ..."); show that.
+                        var body = ""
+                        for try await line in bytes.lines { body += line; if body.count > 2_000 { break } }
+                        if let message = try? JSONDecoder().decode(Chunk.self, from: Data(body.utf8)).error { throw LLMError.server(message) }
+                        throw LLMError.badResponse(code)
+                    }
                     for try await raw in bytes.lines {
                         guard let chunk = try? JSONDecoder().decode(Chunk.self, from: Data(raw.utf8)) else { continue }
+                        if let message = chunk.error { throw LLMError.server(message) }
                         if let text = chunk.message?.content, !text.isEmpty { continuation.yield(text) }
                         if chunk.done == true { break }
                     }

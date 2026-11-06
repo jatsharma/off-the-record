@@ -96,7 +96,7 @@ final class MeetingStore: ObservableObject {
 
     func finishRecording(_ meeting: Meeting, duration: TimeInterval) {
         update(meeting.id) { $0.durationSeconds = duration; $0.status = .transcribing; $0.errorMessage = nil }
-        Task { await process(meetingId: meeting.id) }
+        enqueue(meeting.id) { await $0.process(meetingId: meeting.id) }
     }
 
     func discardRecording(_ meeting: Meeting) {
@@ -122,13 +122,62 @@ final class MeetingStore: ObservableObject {
             status: .transcribing,
             errorMessage: nil)
         try db.pool.write { try meeting.insert($0) }
-        Task { await process(meetingId: id) }
+        enqueue(id) { await $0.process(meetingId: id) }
         return meeting
+    }
+
+    // MARK: Queue
+
+    /// Meetings are processed one at a time. Two pipelines at once would share the loaded speech
+    /// models (and their progress callbacks), hold two recordings in memory and send Ollama two long
+    /// prompts together; queued meetings wait instead.
+    private var queueTail: Task<Void, Never>?
+    private var queued = 0
+
+    @discardableResult
+    func enqueue(_ meetingId: String, _ job: @escaping @MainActor (MeetingStore) async -> Void) -> Task<Void, Never> {
+        let previous = queueTail
+        if previous != nil, queued > 0 { progress[meetingId] = "Waiting for another meeting to finish" }
+        queued += 1
+        let task = Task { @MainActor [weak self] in
+            await previous?.value
+            guard let self else { return }
+            await job(self)
+            self.queued -= 1
+        }
+        queueTail = task
+        return task
+    }
+
+    /// Writes the notes again (Regenerate, Retry notes), after any meeting already being processed.
+    func queueSummarize(meetingId: String) {
+        enqueue(meetingId) { store in
+            await store.summarize(meetingId: meetingId)
+            store.contextFor[meetingId] = nil
+        }
     }
 
     // MARK: Pipeline
 
+    /// One context size for every model call on a meeting. With llama.cpp models (gemma4) Ollama
+    /// reloads the model whenever `num_ctx` changes (about 5 s each time), so the clean-up, notes,
+    /// action-item and title calls all use the same value: the smallest of 8k/16k/32k that fits the
+    /// transcript with room for instructions and the answer, capped by the Settings value.
+    private var contextFor: [String: Int] = [:]
+
+    func contextTokens(for meetingId: String) -> Int {
+        if let known = contextFor[meetingId] { return known }
+        // About 3.3 characters per token for English; UTF-8 bytes / 3 also covers Devanagari.
+        let bytes = segments(for: meetingId).reduce(0) { $0 + $1.text.utf8.count + 20 }
+        let needed = bytes / 3 + 6_000
+        let cap = AppSettings.contextTokens
+        let size = [8_192, 16_384, 32_768].first { $0 >= needed }.map { min($0, cap) } ?? cap
+        contextFor[meetingId] = size
+        return size
+    }
+
     func process(meetingId: String) async {
+        defer { contextFor[meetingId] = nil }
         guard let meeting = fetch(meetingId), let audio = meeting.audioURL else { return }
         do {
             update(meetingId) { $0.status = .transcribing }
@@ -141,6 +190,8 @@ final class MeetingStore: ObservableObject {
             }
             fraction[meetingId] = nil
             try saveTranscript(result.lines, for: meetingId)
+            contextFor[meetingId] = nil
+            _ = contextTokens(for: meetingId)          // fixed now, before the clean-up shortens lines
             saveSpeakerVectors(result.speakerVectors, for: meetingId)
             applyCorrections(meetingId: meetingId)
             var t = Date()
@@ -176,15 +227,19 @@ final class MeetingStore: ObservableObject {
             let glossary = Vocabulary.terms(for: meetingId)
             let turns = NotesPipeline.turns(segments)
             let days = Summarizer.relativeDays(from: meeting.createdAt)
+            let context = contextTokens(for: meetingId)
             // Temperature 0 throughout: the same transcript always gives the same notes, with fewer
             // invented details.
             func ask(_ prompt: String, live: Bool) async throws -> String {
                 var text = ""
+                var shown = Date.distantPast
                 for try await token in client.chat(model: model, system: AppSettings.systemPrompt, user: prompt,
-                                                   contextTokens: AppSettings.contextTokens, temperature: 0) {
+                                                   contextTokens: context, temperature: 0) {
                     text += token
-                    if live { liveSummary[meetingId] = text }
+                    // Every view watching the store redraws on a change; five updates a second is smooth.
+                    if live, Date().timeIntervalSince(shown) >= 0.2 { liveSummary[meetingId] = text; shown = Date() }
                 }
+                if live { liveSummary[meetingId] = text }
                 return text.trimmingCharacters(in: .whitespacesAndNewlines)
             }
             var text: String
@@ -200,8 +255,8 @@ final class MeetingStore: ObservableObject {
                 }
                 progress[meetingId] = "Combining the notes"
                 fraction[meetingId] = Double(parts.count) / Double(parts.count + 1)
-                let template = Summarizer.buildPrompt(meeting: meeting, transcript: "", glossary: glossary)
-                text = try await ask(NotesPipeline.combinePrompt(template: template, partNotes: partNotes), live: true)
+                let instructions = Summarizer.instructions(meeting: meeting, glossary: glossary)
+                text = try await ask(NotesPipeline.combinePrompt(instructions: instructions, partNotes: partNotes), live: true)
                 fraction[meetingId] = nil
             } else {
                 progress[meetingId] = "Writing notes with \(model)"
@@ -224,7 +279,7 @@ final class MeetingStore: ObservableObject {
             liveSummary[meetingId] = nil
             if Self.isAutoTitle(meeting.title) {
                 progress[meetingId] = "Naming the meeting"
-                if let title = try? await suggestTitle(notes: final, client: client, model: model) {
+                if let title = try? await suggestTitle(notes: final, client: client, model: model, contextTokens: context) {
                     update(meetingId) { $0.title = title }
                 }
             }
@@ -249,7 +304,8 @@ final class MeetingStore: ObservableObject {
             let model = AppSettings.model
             guard try await client.hasModel(model) else { return }   // notes step pulls it; skip clean-up this once
             progress[meetingId] = "Checking terms with \(model)"
-            let fixed = try await TranscriptCleaner.clean(lines, glossary: Vocabulary.terms(for: meetingId), client: client, model: model) { [weak self] f in
+            let fixed = try await TranscriptCleaner.clean(lines, glossary: Vocabulary.terms(for: meetingId), client: client, model: model,
+                                                          contextTokens: contextTokens(for: meetingId)) { [weak self] f in
                 self?.fraction[meetingId] = f
             }
             fraction[meetingId] = nil
@@ -300,7 +356,8 @@ final class MeetingStore: ObservableObject {
     }
 
     func retranscribe(_ meeting: Meeting) {
-        Task { await process(meetingId: meeting.id) }
+        update(meeting.id) { $0.status = .transcribing; $0.errorMessage = nil }
+        enqueue(meeting.id) { await $0.process(meetingId: meeting.id) }
     }
 
     // MARK: Titles
@@ -314,10 +371,10 @@ final class MeetingStore: ObservableObject {
             || title.range(of: #"^[0-9A-Fa-f-]{20,}$"#, options: .regularExpression) != nil
     }
 
-    private func suggestTitle(notes: String, client: OllamaClient, model: String) async throws -> String? {
+    private func suggestTitle(notes: String, client: OllamaClient, model: String, contextTokens: Int) async throws -> String? {
         let prompt = "Give this meeting a title of three to seven words that says what it was about. Output only the title, no quotes, no punctuation at the end.\n\n\(notes.prefix(3000))"
         var text = ""
-        for try await token in client.chat(model: model, system: "You name meetings.", user: prompt, contextTokens: 4096) { text += token }
+        for try await token in client.chat(model: model, system: "You name meetings.", user: prompt, contextTokens: contextTokens) { text += token }
         let title = text.components(separatedBy: .newlines).first?.trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters)) ?? ""
         return (3...80).contains(title.count) ? title : nil
     }
@@ -328,14 +385,22 @@ final class MeetingStore: ObservableObject {
     /// voice is labelled automatically in later meetings.
     func renameSpeaker(_ old: String?, to new: String, in meetingId: String) {
         let clean = new.trimmingCharacters(in: .whitespaces)
-        guard !clean.isEmpty else { return }
-        try? db.pool.write { db in
+        guard !clean.isEmpty, clean != old else { return }
+        do { try db.pool.write { db in
             if let old {
                 try db.execute(sql: "update segment set speaker = ? where meetingId = ? and speaker = ?", arguments: [clean, meetingId, old])
                 if var ms = try MeetingSpeaker.filter(Column("meetingId") == meetingId && Column("speaker") == old).fetchOne(db) {
-                    ms.speaker = clean
-                    try ms.update(db)
                     let vector = Vectors.floats(ms.vector)
+                    // Naming a second label after a speaker already in this meeting merges the two (the
+                    // diarizer often splits one person); one row per name, voices averaged.
+                    if var existing = try MeetingSpeaker.filter(Column("meetingId") == meetingId && Column("speaker") == clean).fetchOne(db) {
+                        existing.vector = Vectors.data(Vectors.mean([Vectors.floats(existing.vector), vector]))
+                        try existing.update(db)
+                        try ms.delete(db)
+                    } else {
+                        ms.speaker = clean
+                        try ms.update(db)
+                    }
                     if clean != "You", clean != "Them", !clean.hasPrefix("Speaker ") {
                         if var vp = try VoicePrint.filter(Column("name") == clean).fetchOne(db) {
                             let merged = zip(Vectors.floats(vp.vector), vector).map { ($0 * Float(vp.samples) + $1) / Float(vp.samples + 1) }
@@ -349,6 +414,8 @@ final class MeetingStore: ObservableObject {
             } else {
                 try db.execute(sql: "update segment set speaker = ? where meetingId = ? and speaker is null", arguments: [clean, meetingId])
             }
+        } } catch {
+            NSLog("Speaker rename failed: \(error.localizedDescription)")
         }
     }
 
