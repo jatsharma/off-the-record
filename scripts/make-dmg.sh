@@ -4,7 +4,9 @@
 set -eu
 APP="$1"; VERSION="$2"; IDENTITY="${3:--}"
 NAME="Off the Record"
-OUT="dist/$NAME $VERSION.dmg"
+# No spaces: GitHub turns them into dots in release downloads.
+FILE="Off-the-Record-$VERSION.dmg"
+OUT="dist/$FILE"
 STAGE=$(mktemp -d)
 trap 'rm -rf "$STAGE"' EXIT
 
@@ -30,7 +32,7 @@ rm -f "$OUT"
 hdiutil create -volname "$NAME" -srcfolder "$STAGE" -fs HFS+ -format UDZO -imagekey zlib-level=9 -ov "$OUT" >/dev/null
 if [ "$IDENTITY" != "-" ]; then codesign --force --sign "$IDENTITY" --timestamp=none "$OUT"; fi
 # For the release notes, so people can check the download and the app before "Open Anyway".
-( cd dist && shasum -a 256 "$NAME $VERSION.dmg" > "$NAME $VERSION.dmg.sha256" )
+( cd dist && shasum -a 256 "$FILE" > "$FILE.sha256" )
 echo "$OUT ($(du -h "$OUT" | cut -f1))"
 echo "SHA-256: $(cut -d' ' -f1 "$OUT.sha256")"
 if [ "$IDENTITY" != "-" ]; then

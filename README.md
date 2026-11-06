@@ -63,13 +63,13 @@
 
 ## Install
 
-1. Download **Off the Record &lt;version&gt;.dmg** from [Releases](https://github.com/jatsharma/off-the-record/releases/latest),
+1. Download **Off-the-Record-&lt;version&gt;.dmg** from [Releases](https://github.com/jatsharma/off-the-record/releases/latest),
    open it and drag **Off the Record** into Applications.
 2. Open it. Builds are not notarized by Apple yet, so the first time macOS says it cannot check the app:
    click **Done**, open **System Settings → Privacy & Security**, scroll down and click **Open Anyway**
    next to Off the Record. You do this once; later versions open normally.
    Before you click **Open Anyway**, you can check that the download is the one published here: the
-   release notes list its SHA-256, which `shasum -a 256 ~/Downloads/Off\ the\ Record*.dmg` should match.
+   release notes list its SHA-256, which `shasum -a 256 ~/Downloads/Off-the-Record-*.dmg` should match.
 3. The setup assistant asks what language your meetings are in, gets the microphone and system-audio
    permissions, lets you turn on screen reading (optional, off by default), and downloads what it
    needs, once:
@@ -149,7 +149,7 @@ sh scripts/make-signing-cert.sh
 **Releases.**
 
 ```bash
-make dmg                                  # signed Release build → dist/Off the Record <version>.dmg
+make dmg                                  # signed Release build → dist/Off-the-Record-<version>.dmg
 NOTARY_PROFILE=<profile> make notarize    # with a Developer ID: notarize and staple
 ```
 

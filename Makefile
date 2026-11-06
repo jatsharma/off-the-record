@@ -62,12 +62,12 @@ release: gen    ## Optimized build for distribution, signed with $(SIGN_ID)
 	@codesign -dv "$(RELEASE_APP)" 2>&1 | grep -q "flags=.*runtime" || { echo "The hardened runtime is off in $(RELEASE_APP)"; exit 1; }
 	@! codesign -d --entitlements - "$(RELEASE_APP)" 2>/dev/null | grep -q get-task-allow || { echo "$(RELEASE_APP) allows debuggers (get-task-allow)"; exit 1; }
 
-dmg: release    ## dist/Off the Record <version>.dmg
+dmg: release    ## dist/Off-the-Record-<version>.dmg
 	scripts/make-dmg.sh "$(RELEASE_APP)" "$(VERSION)" "$(SIGN_ID)"
 
 notarize:       ## Developer ID only: NOTARY_PROFILE=<notarytool keychain profile> make notarize
-	xcrun notarytool submit "dist/$(NAME) $(VERSION).dmg" --keychain-profile "$(NOTARY_PROFILE)" --wait
-	xcrun stapler staple "dist/$(NAME) $(VERSION).dmg"
+	xcrun notarytool submit "dist/Off-the-Record-$(VERSION).dmg" --keychain-profile "$(NOTARY_PROFILE)" --wait
+	xcrun stapler staple "dist/Off-the-Record-$(VERSION).dmg"
 
 clean:
 	rm -rf $(DERIVED) $(APP).xcodeproj
