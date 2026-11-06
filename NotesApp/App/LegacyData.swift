@@ -1,11 +1,13 @@
 import Foundation
 
-/// The app was called "Meeting Notes" (bundle io.stackera.notes, data in Application Support/Notes)
-/// before it became Off the Record. On the first launch under the new name, the old data folder is
-/// moved over and the old settings are copied, so meetings, voices and the vocabulary carry on.
-/// Runs before anything reads settings or opens the database.
+/// Earlier identities of this app: "Meeting Notes" (bundle io.stackera.notes, data in Application
+/// Support/Notes), then Off the Record as io.stackera.offtherecord (v0.1.0). On the first launch
+/// under the current bundle id the old data folder is moved over and the old settings are copied,
+/// so meetings, voices and the vocabulary carry on. Runs before anything reads settings or opens
+/// the database.
 enum LegacyData {
-    static let oldBundleId = "io.stackera.notes"
+    /// Newest first: a setting saved under a later identity wins.
+    static let oldBundleIds = ["io.stackera.offtherecord", "io.stackera.notes"]
     private static let doneKey = "legacy.migrated"
 
     static func migrate() {
@@ -29,9 +31,13 @@ enum LegacyData {
 
         // Settings: everything except window positions and "setup done" (the new bundle id needs the
         // microphone and system-audio permissions again, so the Setup Assistant shows once more).
-        guard let previous = defaults.persistentDomain(forName: oldBundleId) else { return }
-        for (key, value) in previous where !key.hasPrefix("NS") && key != "setup.done" && defaults.object(forKey: key) == nil {
-            defaults.set(value, forKey: key)
+        for id in oldBundleIds {
+            guard let previous = defaults.persistentDomain(forName: id) else { continue }
+            for (key, value) in previous where !key.hasPrefix("NS") && key != "setup.done" && key != doneKey
+                && defaults.object(forKey: key) == nil {
+                defaults.set(value, forKey: key)
+            }
+            AppLog.write("Copied settings from \(id)")
         }
     }
 }

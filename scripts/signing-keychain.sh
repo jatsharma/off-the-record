@@ -57,8 +57,14 @@ TXT
     ;;
   unlock)
     if exists; then
-      echo "Unlocking the signing keychain:"
-      security unlock-keychain "$KEYCHAIN"
+      if [ -t 0 ]; then
+        echo "Unlocking the signing keychain:"
+        security unlock-keychain "$KEYCHAIN"
+      else
+        # No terminal to type into (an IDE or script): unlock it beforehand with
+        # `scripts/signing-keychain.sh unlock`, or macOS asks in a dialog when signing.
+        echo "Signing keychain: not unlocking here (no terminal); unlock it first or answer the macOS dialog."
+      fi
     fi
     ;;
   lock)

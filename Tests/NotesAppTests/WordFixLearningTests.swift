@@ -4,7 +4,7 @@ import XCTest
 /// What the app learns from hand edits: word fixes from notes edits, mishearings from transcript
 /// corrections, and the glossary. Each test uses its own throwaway settings, never the user's.
 final class WordFixLearningTests: XCTestCase {
-    private let suiteName = "io.stackera.offtherecord.tests"
+    private let suiteName = "io.jatsharma.offtherecord.tests"
 
     override func setUp() {
         super.setUp()

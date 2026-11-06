@@ -13,7 +13,7 @@ enum AppLog {
     private static let previous = directory.appendingPathComponent("app.log.1")
     /// Past this size the file starts over; the old one is kept as app.log.1.
     private static let maxBytes = 256 * 1024
-    private static let queue = DispatchQueue(label: "io.stackera.offtherecord.log")
+    private static let queue = DispatchQueue(label: "io.jatsharma.offtherecord.log")
     private static let stamp: DateFormatter = {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")

@@ -143,7 +143,7 @@ final class AudioRecorder: ObservableObject {
 /// Receives both audio outputs, converts each to 16 kHz mono float, aligns them by
 /// timestamp into two channels, and writes a stereo WAV.
 final class CaptureSink: NSObject, SCStreamOutput, SCStreamDelegate {
-    let queue = DispatchQueue(label: "io.stackera.offtherecord.capture")
+    let queue = DispatchQueue(label: "io.jatsharma.offtherecord.capture")
     var onLevel: ((Float) -> Void)?
     var onSystemLevel: ((Float) -> Void)?
     var onStopped: ((Error) -> Void)?

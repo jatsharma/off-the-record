@@ -1,6 +1,6 @@
 name: NotesApp
 options:
-  bundleIdPrefix: io.stackera
+  bundleIdPrefix: io.jatsharma
   deploymentTarget:
     macOS: "15.0"
   xcodeVersion: "26.2"
@@ -44,7 +44,7 @@ targets:
         NSHumanReadableCopyright: Local only.
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: io.stackera.offtherecord
+        PRODUCT_BUNDLE_IDENTIFIER: io.jatsharma.offtherecord
         PRODUCT_NAME: Off the Record
         SWIFT_VERSION: "5.0"
         SWIFT_STRICT_CONCURRENCY: minimal
@@ -88,7 +88,7 @@ targets:
       - target: NotesApp
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: io.stackera.offtherecord.tests
+        PRODUCT_BUNDLE_IDENTIFIER: io.jatsharma.offtherecord.tests
         ARCHS: arm64
         GENERATE_INFOPLIST_FILE: YES
         SWIFT_VERSION: "5.0"
