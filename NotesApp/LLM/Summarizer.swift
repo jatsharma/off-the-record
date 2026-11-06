@@ -7,14 +7,32 @@ enum AppSettings {
     static let promptKey = "llm.basePrompt"
     static let contextKey = "llm.contextTokens"
 
-    static let engineKey = "asr.engine"            // "parakeet" | "whisper" | "qwen3" | "tara" | "apex" | "mix"
+    static let engineKey = "asr.engine"            // "parakeet" | "mix" | advanced: "apex" | "tara" | "whisper"
     static let whisperModelKey = "asr.whisperModel"
     static let languageKey = "asr.language"        // "" = auto-detect (Whisper only)
     static let scriptsKey = "asr.scripts"          // comma list of scripts the meetings may contain
     static let defaultScripts = "latin,devanagari"
 
     static let defaultWhisperModel = "openai_whisper-large-v3-v20240930_turbo"
-    static let defaultModel = "gemma4:e4b"
+    /// gemma4:e4b (6.6 GB, about 6.5 GB in memory while writing) on Macs with 16 GB or more; the
+    /// lighter gemma4:e2b (4.6 GB) below that, so notes do not push an 8 GB Mac into swap.
+    static var defaultModel: String { hasRoomForLargeModel ? "gemma4:e4b" : "gemma4:e2b" }
+    static var hasRoomForLargeModel: Bool { ProcessInfo.processInfo.physicalMemory >= 15 << 30 }
+    static let modelDownloadSize = ["gemma4:e4b": "6.6 GB", "gemma4:e2b": "4.6 GB"]
+
+    // MARK: Meeting language
+
+    /// What the user's meetings are in: English, or Hindi and English (Hinglish). Picks the speech
+    /// engine and whether the prompts mention Hindi. Before it was asked, the engine decides.
+    static let meetingLanguageKey = "meetings.language"     // "english" | "hinglish"
+    static var hinglish: Bool {
+        if let value = UserDefaults.standard.string(forKey: meetingLanguageKey) { return value == "hinglish" }
+        return [.mix, .apex, .tara].contains(engine)
+    }
+    static func setMeetingLanguage(hinglish: Bool) {
+        UserDefaults.standard.set(hinglish ? "hinglish" : "english", forKey: meetingLanguageKey)
+        UserDefaults.standard.set((hinglish ? ASREngine.mix : ASREngine.parakeet).rawValue, forKey: engineKey)
+    }
     static let defaultURL = "http://127.0.0.1:11434"
     static let defaultContextTokens = 32_768
 
@@ -23,7 +41,22 @@ enum AppSettings {
     Never invent names, numbers, dates or decisions that are not in it. Output Markdown only, with no preamble.
     """
 
-    static let defaultPrompt = """
+    /// The default notes instructions (the general template); the Hindi paragraph only for Hinglish meetings.
+    static var defaultPrompt: String { defaultPrompt(structure: generalStructure) }
+
+    /// A template's structure followed by the shared rules, dates, Hindi note and glossary.
+    static func defaultPrompt(structure: String) -> String {
+        let prompt = structure + commonTail
+        return hinglish ? prompt.replacingOccurrences(of: "{{hindi}}", with: hindiNote)
+                        : prompt.replacingOccurrences(of: "{{hindi}}\n", with: "")
+    }
+
+    private static let hindiNote = """
+    The transcript may mix Hindi (Devanagari) and English. Write the notes in English and carry over \
+    every specific from the Hindi parts: numbers, counts, distances, names of systems, who owns what.
+    """
+
+    static let generalStructure = """
     Write meeting notes from the transcript above.
 
     Structure (omit a section if there is nothing for it):
@@ -36,11 +69,14 @@ enum AppSettings {
     One line each, ending with the transcript time it was made, like [12:56].
     ## Action items
     - [ ] what — who — when (only if said) [12:56]
+    """
+
+    private static let commonTail = """
+
 
     Speaker labels like "Speaker 1" are unknown names; keep them as they are.
     {{days}}
-    The transcript may mix Hindi (Devanagari) and English. Write the notes in English and carry over \
-    every specific from the Hindi parts: numbers, counts, distances, names of systems, who owns what.
+    {{hindi}}
     Prefer concrete statements (who decided what, numbers, names, reasons) over generalities. Mention \
     only what the transcript says; do not list glossary terms or topics that did not come up. \
     Never write an empty bullet or an empty checkbox; if there \
@@ -97,6 +133,28 @@ enum Summarizer {
     /// the template says {{glossary}} and {{days}}, or at the end. Templates saved while the
     /// transcript still came last lose their {{transcript}} slot (it is sent first now).
     static func instructions(meeting: Meeting, glossary: [String]) -> String {
+        typedNotesBlock(meeting.typedNotes) + template(meeting: meeting, glossary: glossary)
+    }
+
+    /// The user's own notes from the meeting: what mattered to them, to keep and build on.
+    static func typedNotesBlock(_ notes: String?) -> String {
+        guard let notes = notes?.trimmingCharacters(in: .whitespacesAndNewlines), !notes.isEmpty else { return "" }
+        return """
+        Notes the user typed during the meeting (they show what mattered to the user):
+        <<<
+        \(notes)
+        >>>
+        Keep every point the user typed, in their order and close to their wording, and expand each with \
+        the specifics from the transcript. Where a typed point is not in the transcript, keep it as the \
+        user wrote it; do not invent support for it.
+
+        ---
+
+
+        """
+    }
+
+    private static func template(meeting: Meeting, glossary: [String]) -> String {
         var template = AppSettings.prompt
             .replacingOccurrences(of: "Transcript:\n{{transcript}}", with: "")
             .replacingOccurrences(of: "{{transcript}}", with: "")
@@ -129,6 +187,10 @@ enum Summarizer {
         func day(_ offset: Int) -> String {
             (cal.date(byAdding: .day, value: offset, to: date) ?? date)
                 .formatted(.dateTime.weekday(.wide).day().month(.wide))
+        }
+        guard AppSettings.hinglish else {
+            return "Relative days in the transcript: \"today\" = \(day(0)); \"tomorrow\" = \(day(1)); \"yesterday\" = " +
+                "\(day(-1)). In action items write the resolved day and date, never \"tomorrow\"."
         }
         return "Relative days in the transcript: \"aaj\" = \(day(0)); \"kal\" = \(day(1)) for work still to do, " +
             "\(day(-1)) for things already done; \"parson\" = \(day(2)) for work still to do, \(day(-2)) for " +

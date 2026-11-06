@@ -140,9 +140,8 @@ enum NotesPipeline {
         - task: what has to be done, in English, short and concrete. One task per line; if one sentence \
         gives two tasks, or the same person takes two tasks with different timings, write two lines.
         - owner: who will do it, exactly one of: \(speakers.joined(separator: ", ")). "You" is the person \
-        recording. Someone saying "main ... karta hoon" owns it themself; "tum ... kar dena" gives it to the \
-        other person. Empty if unclear.
-        - when: the exact word or words said about its timing ("aaj", "kal", "parson", "today", "next week", \
+        recording. \(AppSettings.hinglish ? "Someone saying \"main ... karta hoon\" owns it themself; \"tum ... kar dena\" gives it to the other person. " : "Someone saying \"I'll do it\" owns it themself. ")Empty if unclear.
+        - when: the exact word or words said about its timing (\(AppSettings.hinglish ? "\"aaj\", \"kal\", \"parson\", " : "")"today", "tomorrow", "next week", \
         a date), or empty if nothing was said.
         - time: the time of the transcript line where the task was said.
         Output only the JSON lines, nothing else. If there are no tasks, output nothing.

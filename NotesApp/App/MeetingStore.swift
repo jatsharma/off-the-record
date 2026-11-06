@@ -219,11 +219,12 @@ final class MeetingStore: ObservableObject {
         do {
             let client = OllamaClient(baseURL: AppSettings.baseURL)
             progress[meetingId] = "Starting Ollama"
-            try await client.ensureRunning()
+            try await client.ensureRunning { [weak self] f, text in Task { @MainActor in self?.progress[meetingId] = text; self?.fraction[meetingId] = f } }
             let model = AppSettings.model
             if try await !client.hasModel(model) {
-                try await client.pull(model) { [weak self] text in Task { @MainActor in self?.progress[meetingId] = text } }
+                try await client.pull(model) { [weak self] f, text in Task { @MainActor in self?.progress[meetingId] = text; self?.fraction[meetingId] = f } }
             }
+            fraction[meetingId] = nil
             let glossary = Vocabulary.terms(for: meetingId)
             let turns = NotesPipeline.turns(segments)
             let days = Summarizer.relativeDays(from: meeting.createdAt)
@@ -300,7 +301,8 @@ final class MeetingStore: ObservableObject {
         do {
             let client = OllamaClient(baseURL: AppSettings.baseURL)
             progress[meetingId] = "Starting Ollama"
-            try await client.ensureRunning()
+            try await client.ensureRunning { [weak self] f, text in Task { @MainActor in self?.progress[meetingId] = text; self?.fraction[meetingId] = f } }
+            fraction[meetingId] = nil
             let model = AppSettings.model
             guard try await client.hasModel(model) else { return }   // notes step pulls it; skip clean-up this once
             progress[meetingId] = "Checking terms with \(model)"
@@ -381,6 +383,21 @@ final class MeetingStore: ObservableObject {
 
     // MARK: Speakers and export
 
+    /// Meetings whose transcript contains `text` (case-insensitive).
+    func meetingsWithTranscript(containing text: String) -> Set<String> {
+        let pattern = "%" + text.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "%", with: "\\%")
+            .replacingOccurrences(of: "_", with: "\\_") + "%"
+        let ids = (try? db.pool.read { db in
+            try String.fetchAll(db, sql: "select distinct meetingId from segment where text like ? escape '\\'", arguments: [pattern])
+        }) ?? []
+        return Set(ids)
+    }
+
+    /// Speaker labels the diarizer made up ("Speaker 2", "Them") that the user has not named yet.
+    static func isUnnamed(_ speaker: String) -> Bool {
+        speaker == "Them" || speaker.range(of: #"^Speaker \d+$"#, options: .regularExpression) != nil
+    }
+
     /// Renames a speaker in one meeting and teaches the name to voice memory, so the same
     /// voice is labelled automatically in later meetings.
     func renameSpeaker(_ old: String?, to new: String, in meetingId: String) {
@@ -410,6 +427,12 @@ final class MeetingStore: ObservableObject {
                             try VoicePrint(id: UUID().uuidString, name: clean, vector: ms.vector, samples: 1, updatedAt: Date()).insert(db)
                         }
                     }
+                }
+                // The notes say "Speaker 2" too: put the name there as well.
+                if var meeting = try Meeting.fetchOne(db, key: meetingId), let summary = meeting.summary, let regex = Self.wordRegex(old) {
+                    let renamed = regex.stringByReplacingMatches(in: summary, range: NSRange(summary.startIndex..., in: summary),
+                                                                 withTemplate: NSRegularExpression.escapedTemplate(for: clean))
+                    if renamed != summary { meeting.summary = renamed; try meeting.update(db) }
                 }
             } else {
                 try db.execute(sql: "update segment set speaker = ? where meetingId = ? and speaker is null", arguments: [clean, meetingId])
@@ -444,6 +467,12 @@ final class MeetingStore: ObservableObject {
 
     /// Saves the whole note edited as Markdown. Lines changed one for one teach fixes as line edits do.
     @discardableResult
+    /// Saves what the user typed during (or after) the meeting.
+    func saveTypedNotes(_ meetingId: String, _ text: String) {
+        let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        update(meetingId) { $0.typedNotes = clean.isEmpty ? nil : text }
+    }
+
     func updateSummary(_ meeting: Meeting, to text: String) -> Vocabulary.NotesLesson {
         let old = (fetch(meeting.id)?.summary ?? "").components(separatedBy: "\n")
         let new = text.components(separatedBy: "\n")

@@ -1,13 +1,13 @@
 import Foundation
 import GRDB
 
-/// One SQLite file under ~/Library/Application Support/Notes, WAL mode, two tables.
+/// One SQLite file under ~/Library/Application Support/Off the Record, WAL mode.
 final class AppDatabase {
     static let shared = AppDatabase()
 
     static let supportDirectory: URL = {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        return base.appendingPathComponent("Notes", isDirectory: true)
+        return base.appendingPathComponent("Off the Record", isDirectory: true)
     }()
     static let audioDirectory = supportDirectory.appendingPathComponent("Audio", isDirectory: true)
 
@@ -80,6 +80,9 @@ final class AppDatabase {
             try db.alter(table: "meeting") { t in
                 t.add(column: "notesEdited", .boolean).notNull().defaults(to: false)
             }
+        }
+        m.registerMigration("v5-typed-notes") { db in
+            try db.alter(table: "meeting") { t in t.add(column: "typedNotes", .text) }
         }
         return m
     }
