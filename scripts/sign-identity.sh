@@ -8,4 +8,7 @@ for name in "Developer ID Application" "Off the Record" "Meeting Notes Dev"; do
   found=$(printf '%s\n' "$ids" | grep -o "\"$name[^\"]*\"" | head -1 | tr -d '"')
   if [ -n "$found" ]; then echo "$found"; exit 0; fi
 done
+# The signing keychain (scripts/signing-keychain.sh) may be locked now and is unlocked just before
+# signing; never fall back to ad-hoc then, which would cost users their permissions.
+if [ -n "$(scripts/signing-keychain.sh path 2>/dev/null)" ]; then echo "Off the Record"; exit 0; fi
 echo "-"

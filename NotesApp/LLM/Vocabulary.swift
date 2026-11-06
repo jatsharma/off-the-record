@@ -18,7 +18,16 @@ enum Vocabulary {
 
     static var cleanupEnabled: Bool { flag(cleanupKey, default: true) }
     /// Off until the user turns it on in setup or Settings ▸ Vocabulary.
-    static var readScreenEnabled: Bool { flag(screenKey, default: false) }
+    /// Release builds read it only from saved settings: `-vocab.readScreen YES` on the command line
+    /// must not turn screen reading on behind the user's back.
+    static var readScreenEnabled: Bool {
+        #if !DEBUG
+        if defaults === UserDefaults.standard, let id = Bundle.main.bundleIdentifier {
+            return UserDefaults.standard.persistentDomain(forName: id)?[screenKey] as? Bool ?? false
+        }
+        #endif
+        return flag(screenKey, default: false)
+    }
 
     /// `bool(forKey:)` also understands "NO"/"YES" strings from launch arguments, which `as? Bool` does not.
     private static func flag(_ key: String, default value: Bool) -> Bool {

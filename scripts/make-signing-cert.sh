@@ -1,6 +1,7 @@
 #!/bin/sh
-# Creates a self-signed code-signing certificate named "Off the Record" in the login keychain
-# and trusts it for code signing. Run once on the machine that builds releases:
+# Creates a self-signed code-signing certificate named "Off the Record" in its own keychain
+# (scripts/signing-keychain.sh: locked except while signing) and trusts it for code signing.
+# Run once on the machine that builds releases:
 #     sh scripts/make-signing-cert.sh
 # `make` then signs with it automatically.
 #
@@ -23,12 +24,18 @@ cd "$DIR"
 # Import key and certificate separately (a PKCS12 made by OpenSSL 3 uses a
 # cipher the macOS importer rejects). The keychain pairs them into an identity.
 /usr/bin/openssl rsa -in key.pem -out key_rsa.pem -traditional 2>/dev/null || /usr/bin/openssl rsa -in key.pem -out key_rsa.pem
-# Only codesign may use the key without asking. (Allowing /usr/bin/security too would let any
-# program export the key silently, and with it sign "updates" that keep users' permissions.)
-security import key_rsa.pem -k ~/Library/Keychains/login.keychain-db -t priv -f openssl \
-  -T /usr/bin/codesign
-security import cert.pem -k ~/Library/Keychains/login.keychain-db -t cert -f openssl
+SCRIPTS=$(cd "$(dirname "$0")" && pwd)
+"$SCRIPTS/signing-keychain.sh" create
+KEYCHAIN=$("$SCRIPTS/signing-keychain.sh" path)
+security unlock-keychain "$KEYCHAIN"
+# Only codesign may use the key without asking, and only while the keychain is unlocked.
+# (Allowing /usr/bin/security too would let any program export the key silently.)
+security import key_rsa.pem -k "$KEYCHAIN" -t priv -f openssl -T /usr/bin/codesign
+security import cert.pem -k "$KEYCHAIN" -t cert -f openssl
+echo "Signing keychain password again, so codesign can use the key without a dialog while unlocked:"
+security set-key-partition-list -S apple-tool:,apple: -s "$KEYCHAIN" >/dev/null
 # User-level trust for code signing (asks for your login password).
-security add-trusted-cert -r trustRoot -p codeSign -k ~/Library/Keychains/login.keychain-db cert.pem
+security add-trusted-cert -r trustRoot -p codeSign -k "$KEYCHAIN" cert.pem
 echo "Done. Identity available:"
 security find-identity -v -p codesigning | grep "$NAME"
+security lock-keychain "$KEYCHAIN"

@@ -18,6 +18,9 @@ final class AppDatabase {
             try FileManager.default.createDirectory(at: Self.audioDirectory, withIntermediateDirectories: true)
             var config = Configuration()
             config.foreignKeysEnabled = true
+            // Deleted meetings, transcripts and screen text are overwritten, not left readable in
+            // free pages of the file.
+            config.prepareDatabase { db in try db.execute(sql: "PRAGMA secure_delete = ON") }
             let path = Self.supportDirectory.appendingPathComponent("notes.sqlite").path
             pool = try DatabasePool(path: path, configuration: config)
             try Self.migrator.migrate(pool)

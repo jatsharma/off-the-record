@@ -161,10 +161,18 @@ enum PlaybackMix {
         return m >= s
     }
 
-    private static func removeOtherMixes(keeping keep: URL) {
+    /// Removes the mix made for this recording, for example when the meeting or its audio is deleted.
+    static func remove(for url: URL) {
+        try? FileManager.default.removeItem(at: FileManager.default.temporaryDirectory.appendingPathComponent(prefix + url.lastPathComponent))
+    }
+
+    /// Removes every mix, when the app quits: they are copies of meeting audio.
+    static func removeAll() { removeOtherMixes(keeping: nil) }
+
+    private static func removeOtherMixes(keeping keep: URL?) {
         let dir = FileManager.default.temporaryDirectory
         let names = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
-        for name in names where name.hasPrefix(prefix) && name != keep.lastPathComponent {
+        for name in names where name.hasPrefix(prefix) && name != keep?.lastPathComponent {
             try? FileManager.default.removeItem(at: dir.appendingPathComponent(name))
         }
     }

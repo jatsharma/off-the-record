@@ -138,7 +138,9 @@ actor SpeechEngine {
             if whisper == nil || whisperModelName != name {
                 status("Loading Whisper (\(name), about 1 GB on first run)")
                 try? FileManager.default.createDirectory(at: ModelCatalog.whisperRoot, withIntermediateDirectories: true)
-                whisper = try await WhisperKit(WhisperKitConfig(model: name, downloadBase: ModelCatalog.whisperRoot, verbose: false, logLevel: .error))
+                let folder = try await ModelPins.whisperFolder(name, downloadBase: ModelCatalog.whisperRoot)
+                whisper = try await WhisperKit(WhisperKitConfig(modelFolder: folder.path, verbose: false, logLevel: .error,
+                                                                load: true, download: false))
                 whisperModelName = name
             }
         }
@@ -504,7 +506,15 @@ actor SpeechEngine {
             guard Self.voicedRatio(chunk) >= 0.25 else { continue }          // mostly silence: skip
             // Tara and Apex spell English terms well on their own; a glossary prompt made Whisper
             // insert terms that were not said, so they read the audio once, without one.
-            guard let hinglish, let raw = await HinglishWhisper.read(hinglish, Self.boost(chunk), engine: engine.hinglishModel) else { continue }
+            guard let hinglish else { continue }
+            guard let raw = await HinglishWhisper.read(hinglish, Self.boost(chunk), engine: engine.hinglishModel) else {
+                // Apex sometimes reads nothing at all from a long, clearly spoken English turn. Mix has
+                // Parakeet loaded: its reading is kept when it is English, rather than losing the turn.
+                if engine == .mix, let english = await englishReading(of: chunk, apex: "") {
+                    lines.append(TranscriptLine(start: c.start, end: c.end, speaker: c.speaker, text: english))
+                }
+                continue
+            }
             var clean = Self.collapseRepeats(raw)
             guard Self.matchesExpectedScripts(clean) else { continue }
             if engine == .mix, let english = await englishReading(of: chunk, apex: clean) { clean = english }
@@ -520,8 +530,9 @@ actor SpeechEngine {
     /// screens); Parakeet keeps them exact but turns Hindi into English-sounding nonsense. A piece is
     /// taken as English when Apex's reading has almost no Hindi words and Parakeet's reading is
     /// almost all dictionary English and not much shorter. Nil keeps Apex's reading.
+    /// An empty `apex` (Apex read nothing) leaves the decision to Parakeet's English share alone.
     private func englishReading(of chunk: [Float], apex: String) async -> String? {
-        let hindi = Self.hindiShare(apex)
+        let hindi = apex.isEmpty ? 0 : Self.hindiShare(apex)
         guard hindi <= 0.12, let asr, chunk.count >= 8_000,
               let state = try? TdtDecoderState(decoderLayers: await asr.decoderLayerCount) else { return nil }
         var decoder = state

@@ -42,15 +42,6 @@ targets:
         NSMicrophoneUsageDescription: Off the Record transcribes your side of the meeting. Audio never leaves this Mac.
         NSAudioCaptureUsageDescription: Off the Record transcribes the other side of your call from system audio. Audio never leaves this Mac.
         NSHumanReadableCopyright: Local only.
-    entitlements:
-      path: NotesApp/Resources/NotesApp.entitlements
-      properties:
-        com.apple.security.device.audio-input: true
-        com.apple.security.app-sandbox: false
-        # The app's own frameworks are signed with a certificate that has no Team ID, which
-        # library validation would reject. The hardened runtime stays on, so other code still
-        # cannot be injected with DYLD_* variables.
-        com.apple.security.cs.disable-library-validation: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.stackera.offtherecord
@@ -73,8 +64,15 @@ targets:
         GENERATE_INFOPLIST_FILE: NO
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ENABLE_PREVIEWS: YES
+      # Entitlements per configuration (XcodeGen's `entitlements:` key would override these):
+      # Release NotesApp.entitlements, Debug NotesApp-Debug.entitlements.
       configs:
+        Debug:
+          # Debug builds load Xcode's debug dylib and the ad-hoc signed test bundle, which library
+          # validation would reject (no Team ID). Release has no libraries of its own and keeps it on.
+          CODE_SIGN_ENTITLEMENTS: NotesApp/Resources/NotesApp-Debug.entitlements
         Release:
+          CODE_SIGN_ENTITLEMENTS: NotesApp/Resources/NotesApp.entitlements
           # No get-task-allow in Release: it lets a debugger attach to the app and would let
           # DYLD_* variables through the hardened runtime. Debug keeps it (Xcode, unit tests).
           CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO

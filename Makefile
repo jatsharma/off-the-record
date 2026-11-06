@@ -42,7 +42,11 @@ update-packages: gen  ## Resolve packages to the newest versions project.yml all
 	xcodebuild -project $(APP).xcodeproj -scheme $(SCHEME) -derivedDataPath $(DERIVED) -resolvePackageDependencies | tail -5
 	cp "$(RESOLVED)" Package.resolved
 
+# Unlocks the signing keychain when there is one (it locks itself after 10 minutes).
+UNLOCK   = @if [ "$(SIGN_ID)" != "-" ]; then scripts/signing-keychain.sh unlock; fi
+
 build: gen      ## Debug build (ad-hoc signed, personal use)
+	$(UNLOCK)
 	xcodebuild -project $(APP).xcodeproj -scheme $(SCHEME) -configuration Debug $(PINNED) \
 	  -derivedDataPath $(DERIVED) -destination 'platform=macOS,arch=arm64' $(SIGNING) build | tail -40
 
@@ -50,20 +54,24 @@ run: build      ## Build and launch
 	open "$(APP_PATH)"
 
 test: gen       ## Unit tests (the app starts as a bare process: no windows, data or settings touched)
+	$(UNLOCK)
 	set -o pipefail; xcodebuild -project $(APP).xcodeproj -scheme $(SCHEME) -configuration Debug $(PINNED) \
 	  -derivedDataPath $(DERIVED) -destination 'platform=macOS,arch=arm64' $(SIGNING) test 2>&1 \
 	  | grep -E "Test Case .*(passed|failed)|error:|Executed|\*\* TEST" | grep -v "\[Connection\]" | tail -60
 
 release: gen    ## Optimized build for distribution, signed with $(SIGN_ID)
 	@echo "Signing with: $(SIGN_ID)"
+	$(UNLOCK)
 	xcodebuild -project $(APP).xcodeproj -scheme $(SCHEME) -configuration Release $(PINNED) \
 	  -derivedDataPath $(DERIVED) -destination 'platform=macOS,arch=arm64' $(SIGNING) build | tail -5
 	codesign --verify --deep --strict "$(RELEASE_APP)" && codesign -dv "$(RELEASE_APP)" 2>&1 | grep -E "Authority|Identifier=" | head -3
 	@codesign -dv "$(RELEASE_APP)" 2>&1 | grep -q "flags=.*runtime" || { echo "The hardened runtime is off in $(RELEASE_APP)"; exit 1; }
 	@! codesign -d --entitlements - "$(RELEASE_APP)" 2>/dev/null | grep -q get-task-allow || { echo "$(RELEASE_APP) allows debuggers (get-task-allow)"; exit 1; }
+	@! codesign -d --entitlements - "$(RELEASE_APP)" 2>/dev/null | grep -q disable-library-validation || { echo "$(RELEASE_APP) has library validation off"; exit 1; }
 
 dmg: release    ## dist/Off-the-Record-<version>.dmg
 	scripts/make-dmg.sh "$(RELEASE_APP)" "$(VERSION)" "$(SIGN_ID)"
+	@scripts/signing-keychain.sh lock
 
 notarize:       ## Developer ID only: NOTARY_PROFILE=<notarytool keychain profile> make notarize
 	xcrun notarytool submit "dist/Off-the-Record-$(VERSION).dmg" --keychain-profile "$(NOTARY_PROFILE)" --wait

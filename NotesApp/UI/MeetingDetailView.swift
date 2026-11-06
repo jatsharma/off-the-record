@@ -392,7 +392,7 @@ struct MeetingDetailView: View {
             .disabled(observer.segments.isEmpty || meeting.status == .summarizing || meeting.status == .transcribing)
 
             Menu {
-                Button("Copy Notes") { copy(meeting.summary ?? "") }.disabled((meeting.summary ?? "").isEmpty)
+                Button("Copy Notes") { copy(ExternalLink.exportable(meeting.summary ?? "")) }.disabled((meeting.summary ?? "").isEmpty)
                 Button("Copy Transcript") { copy(Summarizer.transcriptText(observer.segments)) }.disabled(observer.segments.isEmpty)
                 Divider()
                 Button("Export as Markdown…") { exportMarkdown(meeting) }
@@ -417,8 +417,9 @@ struct MeetingDetailView: View {
         }
     }
 
+    /// Kept on this Mac: not offered to the user's other devices through Universal Clipboard.
     private func copy(_ text: String) {
-        NSPasteboard.general.clearContents()
+        NSPasteboard.general.prepareForNewContents(with: .currentHostOnly)
         NSPasteboard.general.setString(text, forType: .string)
     }
 

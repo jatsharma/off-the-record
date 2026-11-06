@@ -26,7 +26,7 @@ enum HinglishWhisper {
     ]
     static let downloadSize: [ASREngine: String] = [.apex: "1.6 GB", .tara: "3.1 GB"]
 
-    private static var hub: HubApiWrapper { HubApiWrapper(downloadBase: root) }
+    private static var hub: HubApiWrapper { HubApiWrapper(downloadBase: root, endpoint: ModelPins.host) }
     private static let completeMarker = ".complete"
 
     /// Built on this Mac by `make hinglish-models`.

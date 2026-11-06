@@ -286,6 +286,16 @@ enum ExternalLink {
         ["http", "https"].contains(url.scheme?.lowercased() ?? "") && url.host?.isEmpty == false
     }
 
+    /// Notes as they leave the app (Export, Copy Notes). Markdown and HTML that a viewer loads
+    /// by itself (images, embeds) are removed: a model-written image address could carry meeting
+    /// details to a server the moment the export is opened. Links stay; they need a click.
+    static func exportable(_ notes: String) -> String {
+        notes
+            .replacingOccurrences(of: #"!\[([^\]]*)\](\([^)]*\)|\[[^\]]*\])"#, with: "$1", options: .regularExpression)
+            .replacingOccurrences(of: #"(?i)</?(img|iframe|embed|object|video|audio|source|picture|script|link|style|meta)\b[^>]*>"#,
+                                  with: "", options: .regularExpression)
+    }
+
     /// For a view's `openURL` action, which SwiftUI calls on the main thread.
     static func open(_ url: URL) -> OpenURLAction.Result {
         guard isWeb(url) else { return .discarded }

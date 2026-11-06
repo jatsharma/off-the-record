@@ -2,7 +2,7 @@ import Foundation
 
 enum LLMError: LocalizedError {
     case ollamaMissing, ollamaNotResponding, badResponse(Int), server(String), runtimeDownload(String), portBusy(String), ollamaExited
-    case remoteNotResponding(String)
+    case remoteNotResponding(String), notYours(String)
     var errorDescription: String? {
         switch self {
         case .ollamaMissing: return "Ollama is not installed and could not be downloaded. Check the internet connection, or install it from ollama.com."
@@ -10,6 +10,7 @@ enum LLMError: LocalizedError {
         case .ollamaExited: return "Ollama stopped right after starting. Another copy may be using its address; quitting Ollama from the menu bar and trying again usually helps."
         case .runtimeDownload(let why): return "Could not download Ollama: \(why). Check the internet connection and try again."
         case .ollamaNotResponding: return "Ollama did not start. Try `ollama serve` in a terminal."
+        case .notYours(let address): return "The server at \(address) answers like Ollama but is run by another user or program on this Mac, so transcripts are not sent to it. Quit it, or start Ollama yourself."
         case .remoteNotResponding(let address): return "No Ollama answered at \(address). The app starts Ollama only on this Mac; check that server, or set the address in Settings ▸ General ▸ Notes ▸ Advanced back to \(AppSettings.defaultURL)."
         case .badResponse(let code): return "Ollama returned HTTP \(code)."
         case .server(let message): return "Ollama: \(message)"
@@ -51,7 +52,11 @@ struct OllamaClient {
     /// (see `OllamaRuntime`); `status` reports that download.
     func ensureRunning(status: (@Sendable (Double?, String) -> Void)? = nil) async throws {
         switch await probe() {
-        case .ollama: return
+        case .ollama:
+            // Any program, also one of another user on this Mac, can listen on a local port before
+            // Ollama does and read every transcript sent there. Only a server run by this user is used.
+            if isLocal, !Self.listenerIsMine(port: baseURL.port ?? 11434) { throw LLMError.notYours(address) }
+            return
         case .other: throw LLMError.portBusy(address)
         case .nothing: break
         }
@@ -78,6 +83,23 @@ struct OllamaClient {
 
     static func isLocal(_ url: URL) -> Bool {
         ["127.0.0.1", "localhost", "::1", "[::1]"].contains(url.host?.lowercased() ?? "")
+    }
+
+    /// Whether a process of the current user listens on this TCP port. `lsof` run by a normal user
+    /// lists only that user's processes, and each listener's user ID is checked as well.
+    static func listenerIsMine(port: Int) -> Bool {
+        let lsof = Process()
+        lsof.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+        lsof.arguments = ["-nP", "-a", "-iTCP:\(port)", "-sTCP:LISTEN", "-Fu"]
+        let output = Pipe()
+        lsof.standardOutput = output
+        lsof.standardError = FileHandle.nullDevice
+        guard (try? lsof.run()) != nil else { return false }
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        lsof.waitUntilExit()
+        let uids = String(decoding: data, as: UTF8.self).split(separator: "\n")
+            .filter { $0.hasPrefix("u") }.compactMap { uid_t($0.dropFirst()) }
+        return uids.contains(getuid())
     }
 
     /// host:port of the server address, as Ollama's OLLAMA_HOST takes it.

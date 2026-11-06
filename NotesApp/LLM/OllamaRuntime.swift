@@ -89,24 +89,22 @@ enum OllamaRuntime {
     // MARK: The server this app started
 
     private static let lock = NSLock()
-    nonisolated(unsafe) private static var started: Process?
+    nonisolated(unsafe) private static var startedPID: pid_t?
+    nonisolated(unsafe) private static var startedExited = false
 
     /// Starts `ollama serve` listening on `host` (host:port from the server address in Settings).
+    /// The Ollama binary may sit in a folder the user (and so any program they run) can write, so it
+    /// is started as its own program for macOS privacy checks: it does not get this app's
+    /// microphone, system-audio or screen permissions. See `Spawn.disclaimed`.
     static func launch(_ binary: URL, host: String) throws {
-        let process = Process()
-        process.executableURL = binary
-        process.arguments = ["serve"]
         var environment = ProcessInfo.processInfo.environment
         environment["OLLAMA_HOST"] = host
         if let modelsOverride { environment["OLLAMA_MODELS"] = modelsOverride }
-        process.environment = environment
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        try process.run()
-        lock.lock(); started = process; lock.unlock()
+        let pid = try Spawn.disclaimed(binary.path, arguments: ["serve"], environment: environment)
+        lock.lock(); startedPID = pid; startedExited = false; lock.unlock()
         // Remembered on disk too: after a crash or force quit the server keeps running, and the next
         // quit stops it.
-        try? String(process.processIdentifier).write(to: pidFile, atomically: true, encoding: .utf8)
+        try? String(pid).write(to: pidFile, atomically: true, encoding: .utf8)
     }
 
     private static var pidFile: URL { folder.deletingLastPathComponent().appendingPathComponent("ollama.pid") }
@@ -123,17 +121,68 @@ enum OllamaRuntime {
 
     static var startedServerIsRunning: Bool {
         lock.lock(); defer { lock.unlock() }
-        return started?.isRunning ?? true
+        guard let pid = startedPID else { return true }
+        return isRunning(pid)
+    }
+
+    /// Whether the server this app started is still running; collects its exit status once it ended.
+    /// The caller holds `lock`.
+    private static func isRunning(_ pid: pid_t) -> Bool {
+        if startedExited { return false }
+        var status: Int32 = 0
+        if waitpid(pid, &status, WNOHANG) == pid { startedExited = true; return false }
+        return true
     }
 
     /// Stops the server this app started, in this session or one that ended without quitting
     /// properly. A server the user runs (Homebrew, Ollama.app) is never touched. Models stay on disk.
     static func stopStartedServer() {
         lock.lock(); defer { lock.unlock() }
-        if let started, started.isRunning { started.terminate() }
-        else if let pid = orphanPID { kill(pid, SIGTERM) }
-        started = nil
+        if let pid = startedPID, isRunning(pid) { kill(pid, SIGTERM) }
+        else if startedPID == nil, let pid = orphanPID { kill(pid, SIGTERM) }
+        startedPID = nil
         try? FileManager.default.removeItem(at: pidFile)
+    }
+}
+
+/// Starts programs for the app.
+enum Spawn {
+    private typealias SetDisclaim = @convention(c) (UnsafeMutablePointer<posix_spawnattr_t?>, Int32) -> Int32
+
+    /// Starts `path` so that macOS treats it as responsible for itself. A program an app starts
+    /// normally counts as that app for privacy checks and gets its permissions; disclaiming stops
+    /// that (as browsers do for their helper processes). The program also gets none of this app's
+    /// open files; its input and output go to /dev/null.
+    static func disclaimed(_ path: String, arguments: [String], environment: [String: String]) throws -> pid_t {
+        // RTLD_DEFAULT: search every loaded library (the function is in libquarantine, part of libSystem).
+        guard let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "responsibility_spawnattrs_setdisclaim") else {
+            throw LLMError.server("this version of macOS cannot start Ollama separately from the app")
+        }
+        let setDisclaim = unsafeBitCast(symbol, to: SetDisclaim.self)
+
+        var attributes: posix_spawnattr_t?
+        posix_spawnattr_init(&attributes)
+        defer { posix_spawnattr_destroy(&attributes) }
+        guard setDisclaim(&attributes, 1) == 0,
+              posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_CLOEXEC_DEFAULT)) == 0 else {
+            throw LLMError.server("could not prepare to start Ollama")
+        }
+
+        var actions: posix_spawn_file_actions_t?
+        posix_spawn_file_actions_init(&actions)
+        defer { posix_spawn_file_actions_destroy(&actions) }
+        posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0)
+        posix_spawn_file_actions_addopen(&actions, 1, "/dev/null", O_WRONLY, 0)
+        posix_spawn_file_actions_addopen(&actions, 2, "/dev/null", O_WRONLY, 0)
+
+        let argv = ([path] + arguments).map { strdup($0) } + [nil]
+        let envp = environment.map { strdup("\($0.key)=\($0.value)") } + [nil]
+        defer { (argv + envp).forEach { free($0) } }
+
+        var pid: pid_t = 0
+        let result = posix_spawn(&pid, path, &actions, &attributes, argv, envp)
+        guard result == 0 else { throw LLMError.server("could not start Ollama (\(String(cString: strerror(result))))") }
+        return pid
     }
 }
 

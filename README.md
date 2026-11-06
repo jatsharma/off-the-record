@@ -95,11 +95,16 @@ lighter notes model.
   in Settings → Vocabulary.
 - Your data lives in `~/Library/Application Support/Off the Record`: one SQLite database and one audio
   file per meeting. Delete a meeting, its audio or its transcript at any time; Settings → Storage
-  clears the audio of older meetings in one click.
+  clears the audio of older meetings in one click. Deleted text is overwritten in the database, not
+  just marked as free.
 - The files are not encrypted by the app. Turn on FileVault (System Settings → Privacy & Security) so
   they are encrypted on disk, and keep in mind that other apps you run can read your home folder.
 - Links in notes open only after you have seen the full address; links to files or other apps do not
-  open at all.
+  open at all. Exported and copied notes leave out images and embeds, which other apps would load
+  by themselves. Copied text stays on this Mac (not shared through Universal Clipboard).
+- The Ollama server the app starts runs as a separate program for macOS's privacy checks: it does not
+  get the app's microphone, system-audio or screen permissions. Transcripts go only to an Ollama run
+  by your own user account.
 - Settings → Notes → Advanced can point the app at an Ollama server on another computer. The app warns
   when it does: transcripts then go to that server.
 
@@ -129,8 +134,8 @@ make test       # unit tests
 options: `--import <file>`, `--auto-record <seconds>`, `--summarize <meeting id>`,
 `--download-model apex`, `--screenshots <folder>`, `--diagnostics <file>`.
 
-Package versions are pinned in `Package.resolved`, FluidAudio to one commit, and the Hinglish models to
-one Hugging Face commit each. `make update-packages` moves the packages to the newest versions
+Package versions are pinned in `Package.resolved`, FluidAudio to one commit, and every speech model to
+one Hugging Face commit (`ModelPins.swift`, `HinglishWhisper.swift`). `make update-packages` moves the packages to the newest versions
 `project.yml` allows.
 
 The unit tests cover the notes line parser, word-fix learning, the action-item checks and the echo
@@ -144,7 +149,10 @@ builds have to be allowed again after every build. Create a local signing certif
 sh scripts/make-signing-cert.sh
 ```
 
-`make` picks the best identity automatically: a Developer ID, then that certificate, then ad-hoc.
+It goes into its own keychain, locked except while you build: `make` asks for that keychain's password
+and it locks itself again after 10 minutes. A certificate made earlier in the login keychain can be
+moved there with `scripts/signing-keychain.sh move <exported .p12>`. `make` picks the best identity
+automatically: a Developer ID, then that certificate, then ad-hoc.
 
 **Releases.**
 

@@ -8,6 +8,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         OllamaRuntime.stopStartedServer()
+        PlaybackMix.removeAll()
     }
 
     @MainActor
@@ -49,6 +50,7 @@ struct NotesApp: App {
 
     init() {
         LegacyData.migrate()
+        ModelPins.apply()
         let info = Bundle.main.infoDictionary ?? [:]
         AppLog.write("Off the Record \(info["CFBundleShortVersionString"] ?? "?") (\(info["CFBundleVersion"] ?? "?")) started on macOS \(ProcessInfo.processInfo.operatingSystemVersionString)")
         let recorder = AudioRecorder()

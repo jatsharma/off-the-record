@@ -180,6 +180,7 @@ final class MeetingStore: ObservableObject {
         defer {
             contextFor[meetingId] = nil
             _ = try? db.pool.write { try Vocabulary.keepOnlyScreenTerms($0, meetingId: meetingId) }
+            flushDeletes()
         }
         guard let meeting = fetch(meetingId), let audio = meeting.audioURL else { return }
         AppLog.write("Processing \(meetingId): \(Int(meeting.durationSeconds))s of audio, engine \(AppSettings.engine.rawValue), model \(AppSettings.model)")
@@ -590,7 +591,7 @@ final class MeetingStore: ObservableObject {
 
     func markdown(for meeting: Meeting, segments: [Segment]) -> String {
         var out = "# \(meeting.title)\n\n\(meeting.createdAt.formatted(date: .long, time: .shortened)) · \(Summarizer.clock(meeting.durationSeconds))\n\n"
-        if let summary = meeting.summary, !summary.isEmpty { out += summary + "\n\n" }
+        if let summary = meeting.summary, !summary.isEmpty { out += ExternalLink.exportable(summary) + "\n\n" }
         if !segments.isEmpty { out += "## Transcript\n\n" + Summarizer.transcriptText(segments) + "\n" }
         return out
     }
@@ -598,19 +599,33 @@ final class MeetingStore: ObservableObject {
     // MARK: Deletes
 
     func deleteAudio(_ meeting: Meeting) {
-        if let url = meeting.audioURL { try? FileManager.default.removeItem(at: url) }
+        if let url = meeting.audioURL {
+            try? FileManager.default.removeItem(at: url)
+            PlaybackMix.remove(for: url)
+        }
         update(meeting.id) { $0.audioPath = nil }
     }
 
     func deleteTranscript(_ meeting: Meeting) {
         _ = try? db.pool.write { try Segment.filter(Column("meetingId") == meeting.id).deleteAll($0) }
+        flushDeletes()
     }
 
     func delete(_ meeting: Meeting) {
-        if let url = meeting.audioURL { try? FileManager.default.removeItem(at: url) }
+        if let url = meeting.audioURL {
+            try? FileManager.default.removeItem(at: url)
+            PlaybackMix.remove(for: url)
+        }
         _ = try? db.pool.write { try Meeting.deleteOne($0, key: meeting.id) }
+        flushDeletes()
         progress[meeting.id] = nil
         liveSummary[meeting.id] = nil
+    }
+
+    /// Deleted rows are overwritten in the database file (secure_delete, see AppDatabase); this also
+    /// empties the write-ahead log, which would otherwise keep a copy until its next checkpoint.
+    func flushDeletes() {
+        _ = try? db.pool.writeWithoutTransaction { try $0.checkpoint(.truncate) }
     }
 
     func rename(_ meeting: Meeting, to title: String) {
