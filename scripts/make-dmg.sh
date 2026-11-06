@@ -28,5 +28,11 @@ TXT
 esac
 rm -f "$OUT"
 hdiutil create -volname "$NAME" -srcfolder "$STAGE" -fs HFS+ -format UDZO -imagekey zlib-level=9 -ov "$OUT" >/dev/null
-[ "$IDENTITY" != "-" ] && codesign --force --sign "$IDENTITY" --timestamp=none "$OUT"
+if [ "$IDENTITY" != "-" ]; then codesign --force --sign "$IDENTITY" --timestamp=none "$OUT"; fi
+# For the release notes, so people can check the download and the app before "Open Anyway".
+( cd dist && shasum -a 256 "$NAME $VERSION.dmg" > "$NAME $VERSION.dmg.sha256" )
 echo "$OUT ($(du -h "$OUT" | cut -f1))"
+echo "SHA-256: $(cut -d' ' -f1 "$OUT.sha256")"
+if [ "$IDENTITY" != "-" ]; then
+  echo "Certificate SHA-256: $(security find-certificate -c "$IDENTITY" -Z -a 2>/dev/null | awk '/SHA-256/ {print $3; exit}')"
+fi

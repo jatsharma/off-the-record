@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// One line of the notes' Markdown: its kind, the marker text before the content (kept as written
 /// when the line is edited) and the content itself.
@@ -83,7 +84,7 @@ struct EditableNotes: View {
         }
         .lineSpacing(3)
         .environment(\.openURL, OpenURLAction { url in
-            guard url.scheme == "notes-time", let seconds = Double(url.host ?? "") else { return .systemAction }
+            guard url.scheme == "notes-time", let seconds = Double(url.host ?? "") else { return ExternalLink.open(url) }
             onSeek?(seconds)
             return .handled
         })
@@ -220,7 +221,14 @@ struct EditableNotes: View {
             return Text(s)
         }
         for run in attributed.runs {
-            guard let url = run.link, url.scheme == "notes-time" else { continue }
+            guard let url = run.link else { continue }
+            // Notes are written by the model from what was said, so a link may have been planted
+            // by someone on the call. Only web links stay clickable (and ask first, see
+            // `ExternalLink`); file, app and other links become plain text.
+            guard url.scheme == "notes-time" else {
+                if !ExternalLink.isWeb(url) { attributed[run.range].link = nil }
+                continue
+            }
             let parts = (url.host ?? "").split(separator: "-", omittingEmptySubsequences: false).compactMap { Double($0) }
             let seconds = parts.count == 3 ? parts[0] * 3600 + parts[1] * 60 + parts[2] : parts.count == 2 ? parts[0] * 60 + parts[1] : 0
             attributed[run.range].link = URL(string: "notes-time://\(Int(seconds))")
@@ -268,5 +276,27 @@ struct LessonBanner: View {
         .padding(12)
         .background(.tint.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
         .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.tint.opacity(0.25)))
+    }
+}
+
+/// Web links in notes open only after the user has seen the whole address: a link the model wrote
+/// could carry meeting details to someone else's site. Any other kind of link is not opened.
+enum ExternalLink {
+    static func isWeb(_ url: URL) -> Bool {
+        ["http", "https"].contains(url.scheme?.lowercased() ?? "") && url.host?.isEmpty == false
+    }
+
+    /// For a view's `openURL` action, which SwiftUI calls on the main thread.
+    static func open(_ url: URL) -> OpenURLAction.Result {
+        guard isWeb(url) else { return .discarded }
+        return MainActor.assumeIsolated {
+            let alert = NSAlert()
+            alert.messageText = "Open this link in your browser?"
+            alert.informativeText = url.absoluteString
+            alert.addButton(withTitle: "Open")
+            alert.addButton(withTitle: "Cancel")
+            if alert.runModal() == .alertFirstButtonReturn { NSWorkspace.shared.open(url) }
+            return .handled
+        }
     }
 }

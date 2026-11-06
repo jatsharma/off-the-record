@@ -5,7 +5,8 @@ import Foundation
 /// the last lines, also after a crash or a relaunch.
 ///
 /// Never write meeting content here (titles, transcript text, notes, screen text): these lines end
-/// up in bug reports. Use NSLog for debug output that quotes a transcript.
+/// up in bug reports. Debug output that quotes a transcript goes to NSLog inside `#if DEBUG`
+/// only: the system log keeps NSLog text unredacted.
 enum AppLog {
     static let directory = AppDatabase.supportDirectory.appendingPathComponent("Logs", isDirectory: true)
     static let file = directory.appendingPathComponent("app.log")

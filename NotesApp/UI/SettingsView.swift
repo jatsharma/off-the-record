@@ -106,6 +106,11 @@ struct GeneralSettings: View {
                     .font(.caption).foregroundStyle(.secondary)
                 DisclosureGroup("Advanced", isExpanded: $advancedNotes) {
                     TextField("Ollama server", text: $url, prompt: Text(AppSettings.defaultURL))
+                    if let address = URL(string: url), !url.isEmpty, !OllamaClient.isLocal(address) {
+                        Label("This server is not on this Mac. Every transcript is sent to it to write the notes\(address.scheme == "https" ? "" : ", unencrypted"). The app does not start Ollama there.",
+                              systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption).foregroundStyle(.orange)
+                    }
                     Stepper("Longest meeting: \(contextTokens) tokens (about \(contextTokens / 360) minutes)", value: $contextTokens, in: 4096...131_072, step: 4096)
                     Toggle("Write long meetings part by part", isOn: $notesByParts)
                     Text("For meetings over 15 minutes: notes for each 8-minute part, then combined. Catches more points, but small models also make more mistakes this way, and it takes about four times as long.")

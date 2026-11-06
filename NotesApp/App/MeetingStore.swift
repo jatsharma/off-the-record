@@ -177,7 +177,10 @@ final class MeetingStore: ObservableObject {
     }
 
     func process(meetingId: String) async {
-        defer { contextFor[meetingId] = nil }
+        defer {
+            contextFor[meetingId] = nil
+            _ = try? db.pool.write { try Vocabulary.keepOnlyScreenTerms($0, meetingId: meetingId) }
+        }
         guard let meeting = fetch(meetingId), let audio = meeting.audioURL else { return }
         AppLog.write("Processing \(meetingId): \(Int(meeting.durationSeconds))s of audio, engine \(AppSettings.engine.rawValue), model \(AppSettings.model)")
         do {

@@ -68,6 +68,8 @@
 2. Open it. Builds are not notarized by Apple yet, so the first time macOS says it cannot check the app:
    click **Done**, open **System Settings → Privacy & Security**, scroll down and click **Open Anyway**
    next to Off the Record. You do this once; later versions open normally.
+   Before you click **Open Anyway**, you can check that the download is the one published here: the
+   release notes list its SHA-256, which `shasum -a 256 ~/Downloads/Off\ the\ Record*.dmg` should match.
 3. The setup assistant asks what language your meetings are in, gets the microphone and system-audio
    permissions, lets you turn on screen reading (optional, off by default), and downloads what it
    needs, once:
@@ -88,11 +90,18 @@ lighter notes model.
 - Network use is limited to downloading models from Hugging Face, the Ollama runtime from GitHub and the
   notes model from the Ollama registry. Nothing is uploaded.
 - Optional, off by default: while recording, the app can read text on your screen every 20 seconds
-  (only when the screen changed) so names on shared slides are spelled correctly. The text stays with
-  the meeting on your Mac. Turn it on during setup or in Settings → Vocabulary.
+  (only when the screen changed) so names on shared slides are spelled correctly. Once the meeting is
+  processed, only the names and terms found are kept, not the screen text. Turn it on during setup or
+  in Settings → Vocabulary.
 - Your data lives in `~/Library/Application Support/Off the Record`: one SQLite database and one audio
   file per meeting. Delete a meeting, its audio or its transcript at any time; Settings → Storage
   clears the audio of older meetings in one click.
+- The files are not encrypted by the app. Turn on FileVault (System Settings → Privacy & Security) so
+  they are encrypted on disk, and keep in mind that other apps you run can read your home folder.
+- Links in notes open only after you have seen the full address; links to files or other apps do not
+  open at all.
+- Settings → Notes → Advanced can point the app at an Ollama server on another computer. The app warns
+  when it does: transcripts then go to that server.
 
 ## How it works
 
@@ -119,6 +128,10 @@ make test       # unit tests
 `make gen` generates `NotesApp.xcodeproj` to open in Xcode. Debug builds accept developer launch
 options: `--import <file>`, `--auto-record <seconds>`, `--summarize <meeting id>`,
 `--download-model apex`, `--screenshots <folder>`, `--diagnostics <file>`.
+
+Package versions are pinned in `Package.resolved`, FluidAudio to one commit, and the Hinglish models to
+one Hugging Face commit each. `make update-packages` moves the packages to the newest versions
+`project.yml` allows.
 
 The unit tests cover the notes line parser, word-fix learning, the action-item checks and the echo
 gate. They run inside the app as a bare process, so your meetings and settings are not touched.

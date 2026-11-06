@@ -95,7 +95,18 @@ enum AppSettings {
     }
     static var language: String? { UserDefaults.standard.string(forKey: languageKey).flatMap { $0.isEmpty ? nil : $0 } }
     static var model: String { UserDefaults.standard.string(forKey: modelKey).flatMap { $0.isEmpty ? nil : $0 } ?? defaultModel }
-    static var baseURL: URL { URL(string: UserDefaults.standard.string(forKey: urlKey) ?? "") ?? URL(string: defaultURL)! }
+    static var baseURL: URL { URL(string: urlSetting ?? "") ?? URL(string: defaultURL)! }
+
+    /// The server address from Settings. Release builds ignore `-llm.url` on the command line, so
+    /// another program cannot quietly send one launch's transcripts elsewhere.
+    private static var urlSetting: String? {
+        #if DEBUG
+        return UserDefaults.standard.string(forKey: urlKey)
+        #else
+        let id = Bundle.main.bundleIdentifier ?? ""
+        return UserDefaults.standard.persistentDomain(forName: id)?[urlKey] as? String
+        #endif
+    }
     static var prompt: String { UserDefaults.standard.string(forKey: promptKey).flatMap { $0.isEmpty ? nil : $0 } ?? defaultPrompt }
     static var contextTokens: Int {
         let v = UserDefaults.standard.integer(forKey: contextKey)

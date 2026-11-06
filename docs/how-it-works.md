@@ -106,5 +106,6 @@ you talking over the other side is kept.
   32-minute meeting).
 - **Read the screen** – off by default; turn it on during setup or in Settings → Vocabulary. While
   recording, the screen's text is read every 20 s (only when the screen changed) and its names and
-  terms join the glossary. The clean-up pass only sends lines that hold a word sounding like a
+  terms join the glossary. When the meeting has been processed, its screen text is replaced by just
+  those terms. The clean-up pass only sends lines that hold a word sounding like a
   glossary term.

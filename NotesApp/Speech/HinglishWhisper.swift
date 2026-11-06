@@ -18,6 +18,12 @@ enum HinglishWhisper {
         .apex: "jatsharma/whisper-hinglish-apex-coreml",
         .tara: "jatsharma/whisper-hinglish-tara-coreml",
     ]
+    /// The exact Hugging Face commit of each, so a change to the repo cannot change what the app
+    /// downloads. Bump with a release after converting new versions.
+    static let revisions: [ASREngine: String] = [
+        .apex: "20299a4b687eea4ec830bf879c3cb0d47773c735",
+        .tara: "a06cad171a0d761b4519d5b5f895a5fac3ca6291",
+    ]
     static let downloadSize: [ASREngine: String] = [.apex: "1.6 GB", .tara: "3.1 GB"]
 
     private static var hub: HubApiWrapper { HubApiWrapper(downloadBase: root) }
@@ -58,9 +64,11 @@ enum HinglishWhisper {
     /// Downloads the model from Hugging Face. Files already there are skipped, so an interrupted
     /// download continues where it stopped.
     static func download(_ engine: ASREngine, progress: @escaping @Sendable (Double) -> Void) async throws {
-        guard let repo = repos[engine], let folder = downloadedFolder(engine) else { throw SpeechError.modelMissing(engine) }
+        guard let repo = repos[engine], let revision = revisions[engine], let folder = downloadedFolder(engine) else {
+            throw SpeechError.modelMissing(engine)
+        }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        _ = try await hub.snapshot(from: .init(id: repo)) { p in progress(p.fractionCompleted) }
+        _ = try await hub.snapshot(from: .init(id: repo), revision: revision) { p in progress(p.fractionCompleted) }
         guard hasModelFiles(folder) else { throw SpeechError.modelMissing(engine) }
         FileManager.default.createFile(atPath: folder.appendingPathComponent(completeMarker).path, contents: Data())
     }

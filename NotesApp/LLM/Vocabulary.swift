@@ -47,10 +47,36 @@ enum Vocabulary {
 
     /// Terms for one meeting: this meeting's screen terms, then the Settings list.
     static func terms(for meetingId: String) -> [String] {
-        let texts = (try? AppDatabase.shared.pool.read { db in
-            try ScreenText.filter(Column("meetingId") == meetingId).fetchAll(db).map(\.text)
+        let rows = (try? AppDatabase.shared.pool.read { db in
+            try ScreenText.filter(Column("meetingId") == meetingId).fetchAll(db)
         }) ?? []
-        return unique(screenTerms(texts) + manual)
+        return unique(screenTerms(rows) + manual)
+    }
+
+    /// The terms in a meeting's screen rows: read from the text while it is still there, or the
+    /// list kept once the text was dropped (see `keepOnlyScreenTerms`).
+    static func screenTerms(_ rows: [ScreenText]) -> [String] {
+        if let kept = rows.first(where: { $0.id == termsRowId($0.meetingId) }) {
+            return kept.text.components(separatedBy: "\n").filter { !$0.isEmpty }
+        }
+        return screenTerms(rows.map(\.text))
+    }
+
+    private static func termsRowId(_ meetingId: String) -> String { "terms-" + meetingId }
+
+    /// Once a meeting is processed only its screen terms are needed (for a later re-transcribe or
+    /// new notes). The full screen text can hold anything that was on screen (other chats,
+    /// passwords), so it is replaced by the list of terms. `meetingId` nil does every meeting.
+    static func keepOnlyScreenTerms(_ db: Database, meetingId: String? = nil) throws {
+        let request = meetingId.map { ScreenText.filter(Column("meetingId") == $0) } ?? ScreenText.all()
+        let byMeeting = Dictionary(grouping: try request.fetchAll(db), by: \.meetingId)
+        for (meeting, rows) in byMeeting where !rows.contains(where: { $0.id == termsRowId(meeting) }) {
+            let terms = screenTerms(rows)
+            try ScreenText.filter(Column("meetingId") == meeting).deleteAll(db)
+            guard !terms.isEmpty else { continue }
+            try ScreenText(id: termsRowId(meeting), meetingId: meeting, capturedAt: rows.map(\.capturedAt).max() ?? Date(),
+                           text: terms.joined(separator: "\n")).insert(db)
+        }
     }
 
     /// Context for the recognizer: a short comma-separated list. The recognizer has little room

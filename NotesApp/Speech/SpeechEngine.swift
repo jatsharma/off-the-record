@@ -530,7 +530,10 @@ actor SpeechEngine {
         let english = await MainActor.run { Self.englishShare(parakeet) }
         let words = { (t: String) in t.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).count }
         let take = english >= 0.8 && words(parakeet) * 10 >= words(apex) * 7
+        #if DEBUG
+        // Quotes the transcript, so Debug builds only: the system log keeps NSLog text unredacted.
         NSLog("[mix] %@ hindi=%.2f english=%.2f | apex: %@ | parakeet: %@", take ? "PARAKEET" : "apex", hindi, english, apex, parakeet)
+        #endif
         return take ? parakeet : nil
     }
 

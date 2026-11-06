@@ -61,7 +61,7 @@ struct ActionItemsView: View {
                                         EditableNotes.inline(item.text).strikethrough(item.done).foregroundStyle(item.done ? .secondary : .primary)
                                             // Its time link opens the meeting.
                                             .environment(\.openURL, OpenURLAction { url in
-                                                guard url.scheme == "notes-time" else { return .systemAction }
+                                                guard url.scheme == "notes-time" else { return ExternalLink.open(url) }
                                                 open(item.meetingId)
                                                 return .handled
                                             })

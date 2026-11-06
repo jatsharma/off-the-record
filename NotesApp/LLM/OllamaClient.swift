@@ -2,6 +2,7 @@ import Foundation
 
 enum LLMError: LocalizedError {
     case ollamaMissing, ollamaNotResponding, badResponse(Int), server(String), runtimeDownload(String), portBusy(String), ollamaExited
+    case remoteNotResponding(String)
     var errorDescription: String? {
         switch self {
         case .ollamaMissing: return "Ollama is not installed and could not be downloaded. Check the internet connection, or install it from ollama.com."
@@ -9,6 +10,7 @@ enum LLMError: LocalizedError {
         case .ollamaExited: return "Ollama stopped right after starting. Another copy may be using its address; quitting Ollama from the menu bar and trying again usually helps."
         case .runtimeDownload(let why): return "Could not download Ollama: \(why). Check the internet connection and try again."
         case .ollamaNotResponding: return "Ollama did not start. Try `ollama serve` in a terminal."
+        case .remoteNotResponding(let address): return "No Ollama answered at \(address). The app starts Ollama only on this Mac; check that server, or set the address in Settings ▸ General ▸ Notes ▸ Advanced back to \(AppSettings.defaultURL)."
         case .badResponse(let code): return "Ollama returned HTTP \(code)."
         case .server(let message): return "Ollama: \(message)"
         }
@@ -53,6 +55,9 @@ struct OllamaClient {
         case .other: throw LLMError.portBusy(address)
         case .nothing: break
         }
+        // Only a server on this Mac is started here. Starting one for another address would make
+        // Ollama listen there (0.0.0.0 is every network the Mac is on) with no password.
+        guard isLocal else { throw LLMError.remoteNotResponding(address) }
         if OllamaRuntime.installedBinary == nil {
             status?(0, "Downloading Ollama (\(OllamaRuntime.downloadSize), once)")
             try await OllamaRuntime.install { f in status?(f, "Downloading Ollama (\(OllamaRuntime.downloadSize), once)") }
@@ -66,6 +71,13 @@ struct OllamaClient {
             if !OllamaRuntime.startedServerIsRunning { throw LLMError.ollamaExited }
         }
         throw LLMError.ollamaNotResponding
+    }
+
+    /// The server address is on this Mac, so transcripts stay here.
+    var isLocal: Bool { Self.isLocal(baseURL) }
+
+    static func isLocal(_ url: URL) -> Bool {
+        ["127.0.0.1", "localhost", "::1", "[::1]"].contains(url.host?.lowercased() ?? "")
     }
 
     /// host:port of the server address, as Ollama's OLLAMA_HOST takes it.

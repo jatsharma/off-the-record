@@ -84,6 +84,10 @@ final class AppDatabase {
         m.registerMigration("v5-typed-notes") { db in
             try db.alter(table: "meeting") { t in t.add(column: "typedNotes", .text) }
         }
+        m.registerMigration("v6-screen-terms-only") { db in
+            // Meetings recorded before this keep only the terms read off the screen, not the text.
+            try Vocabulary.keepOnlyScreenTerms(db)
+        }
         return m
     }
 }

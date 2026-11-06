@@ -47,16 +47,19 @@ targets:
       properties:
         com.apple.security.device.audio-input: true
         com.apple.security.app-sandbox: false
+        # The app's own frameworks are signed with a certificate that has no Team ID, which
+        # library validation would reject. The hardened runtime stays on, so other code still
+        # cannot be injected with DYLD_* variables.
+        com.apple.security.cs.disable-library-validation: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.stackera.offtherecord
         PRODUCT_NAME: Off the Record
         SWIFT_VERSION: "5.0"
         SWIFT_STRICT_CONCURRENCY: minimal
-        # Off: hardened-runtime library validation rejects our own dylibs when the
-        # signing certificate has no Team ID (self-signed local identity). Turn it
-        # on again only for a Developer ID + notarized build.
-        ENABLE_HARDENED_RUNTIME: "$(OTR_HARDENED:default=NO)"
+        # On for every build: without it any program can load its own code into the app
+        # (DYLD_INSERT_LIBRARIES) and use the app's microphone, system-audio and screen permissions.
+        ENABLE_HARDENED_RUNTIME: YES
         # Stable identity so macOS keeps the microphone and system-audio permissions across
         # builds and updates (ad-hoc "-" changes on every build). `make` passes the best one
         # available: "Off the Record" (scripts/make-signing-cert.sh), a Developer ID, or ad-hoc.
@@ -70,6 +73,11 @@ targets:
         GENERATE_INFOPLIST_FILE: NO
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ENABLE_PREVIEWS: YES
+      configs:
+        Release:
+          # No get-task-allow in Release: it lets a debugger attach to the app and would let
+          # DYLD_* variables through the hardened runtime. Debug keeps it (Xcode, unit tests).
+          CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
     scheme:
       testTargets:
         - NotesAppTests
@@ -90,6 +98,7 @@ targets:
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Off the Record.app/Contents/MacOS/Off the Record"
         BUNDLE_LOADER: "$(TEST_HOST)"
         # Loaded into the app, which has library validation off; ad-hoc is enough.
+        ENABLE_HARDENED_RUNTIME: NO
         CODE_SIGN_IDENTITY: "-"
         CODE_SIGN_STYLE: Manual
         DEVELOPMENT_TEAM: ""
