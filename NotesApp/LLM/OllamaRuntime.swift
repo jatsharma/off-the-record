@@ -1,6 +1,7 @@
 import Foundation
 import CryptoKit
 import Darwin
+import os
 
 /// The notes model runs in Ollama. When Ollama is not installed (Homebrew or Ollama.app), the
 /// official macOS build is downloaded once into the app's folder, checked against the checksum
@@ -186,15 +187,48 @@ enum Spawn {
     }
 }
 
-/// A file download with progress, written to `destination` once complete.
+/// A file download with progress, written to `destination` once complete. A download that crawls
+/// (`SlowDownload`) is stopped and continued from where it was on a new session, which opens a new
+/// connection.
 enum Download {
     static func file(_ url: URL, to destination: URL, progress: @escaping @Sendable (Double) -> Void) async throws {
-        let delegate = Delegate(destination: destination, progress: progress)
-        let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
-        defer { session.finishTasksAndInvalidate() }
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            delegate.continuation = continuation
-            session.downloadTask(with: url).resume()
+        var rule = SlowDownload()
+        var resumeData: Data?
+        while true {
+            try Task.checkCancellation()
+            let delegate = Delegate(destination: destination, progress: progress)
+            let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
+            defer { session.finishTasksAndInvalidate() }
+            let task = resumeData.map { session.downloadTask(withResumeData: $0) } ?? session.downloadTask(with: url)
+            let watcher = Task.detached(priority: .utility) { [rule] () -> (rule: SlowDownload, tripped: Bool, resumeData: Data?) in
+                var rule = rule
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(1))
+                    if rule.tooSlow(bytes: delegate.written, active: true) {
+                        return (rule, true, await task.cancelByProducingResumeData())
+                    }
+                }
+                return (rule, false, nil)
+            }
+            do {
+                try await withTaskCancellationHandler {
+                    try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                        delegate.continuation = continuation
+                        task.resume()
+                    }
+                } onCancel: {
+                    task.cancel()
+                }
+                watcher.cancel()
+                return
+            } catch {
+                watcher.cancel()
+                let outcome = await watcher.value
+                guard outcome.tripped, !Task.isCancelled else { throw error }
+                rule = outcome.rule
+                resumeData = outcome.resumeData   // nil when the server cannot resume: start over
+                AppLog.write("Download of \(url.lastPathComponent) was slow; reconnecting")
+            }
         }
     }
 
@@ -203,6 +237,9 @@ enum Download {
         let progress: @Sendable (Double) -> Void
         var continuation: CheckedContinuation<Void, Error>?
         private var moveError: Error?
+        private let bytes = OSAllocatedUnfairLock<Int64>(initialState: 0)
+        /// Bytes of the file received so far, including those from before a resume.
+        var written: Int64 { bytes.withLock { $0 } }
 
         init(destination: URL, progress: @escaping @Sendable (Double) -> Void) {
             self.destination = destination
@@ -211,13 +248,14 @@ enum Download {
 
         func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64,
                         totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
+            bytes.withLock { $0 = totalBytesWritten }
             if totalBytesExpectedToWrite > 0 { progress(Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)) }
         }
 
         func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
             // The temporary file is deleted when this returns, so it is moved now.
             let code = (downloadTask.response as? HTTPURLResponse)?.statusCode ?? 0
-            guard code == 200 else { moveError = LLMError.runtimeDownload("the server answered \(code)"); return }
+            guard code == 200 || code == 206 else { moveError = LLMError.runtimeDownload("the server answered \(code)"); return }
             do {
                 try? FileManager.default.removeItem(at: destination)
                 try FileManager.default.moveItem(at: location, to: destination)

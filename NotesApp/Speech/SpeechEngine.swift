@@ -167,9 +167,10 @@ actor SpeechEngine {
     }
 
     /// Runs a FluidAudio download, which reports no progress of its own, while measuring how far its
-    /// folder has grown against the model's known size.
+    /// folder has grown against the model's known size. A download that crawls is started again on
+    /// a new connection (`SlowDownload`); FluidAudio resumes from its `.partial` files.
     private static func downloading<T>(_ folder: URL, expected: Int64, label: String, report: @escaping ProgressReport,
-                                       _ work: () async throws -> T) async throws -> T {
+                                       _ work: @escaping @Sendable () async throws -> T) async throws -> T {
         let present = ModelCatalog.folderSize(folder) ?? 0
         guard present < expected * 9 / 10 else { return try await work() }
         report(0, "Downloading \(label)")
@@ -181,7 +182,9 @@ actor SpeechEngine {
             }
         }
         defer { watcher.cancel() }
-        return try await work()
+        // FluidAudio sends every request through one shared session; flushing it makes the next
+        // request open a new connection instead of reusing the slow one.
+        return try await SlowDownload.run(watching: folder, label: label, reconnect: { await ModelHub.session.flush() }, work)
     }
 
     /// - context: glossary text for recognizers that accept it (Whisper); see `Vocabulary`.

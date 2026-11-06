@@ -200,6 +200,7 @@ struct MeetingDetailView: View {
                 }
             }
         }
+        .closedOnQuit { editingSegment = nil; confirm = nil }
         .sheet(item: $editingSegment) { segment in
             VStack(alignment: .leading, spacing: 10) {
                 Text("Correct this line").font(.headline)

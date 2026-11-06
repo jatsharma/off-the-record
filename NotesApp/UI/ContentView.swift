@@ -119,6 +119,7 @@ struct ContentView: View {
             }
         }
         .sheet(isPresented: $store.showSetup) { SetupView() }
+        .closedOnQuit { store.showSetup = false; pendingDelete = nil }
         .onAppear {
             if hotKey == nil { hotKey = GlobalHotKey { Task { @MainActor in recording.toggle() } } }
         }

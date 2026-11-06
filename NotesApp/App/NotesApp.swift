@@ -6,6 +6,18 @@ import UniformTypeIdentifiers
 final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor static weak var recording: RecordingController?
 
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // AppKit's own handler for quit requests from scripts, other apps and log out refuses while
+        // a sheet is open, without calling `terminate`; this one goes through `QuittableApplication`.
+        NSAppleEventManager.shared().setEventHandler(self, andSelector: #selector(quitRequested(_:reply:)),
+                                                     forEventClass: AEEventClass(kCoreEventClass),
+                                                     andEventID: AEEventID(kAEQuitApplication))
+    }
+
+    @MainActor @objc private func quitRequested(_ event: NSAppleEventDescriptor, reply: NSAppleEventDescriptor) {
+        NSApp.terminate(nil)
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         OllamaRuntime.stopStartedServer()
         PlaybackMix.removeAll()
@@ -37,8 +49,37 @@ enum Launcher {
             app.setActivationPolicy(.prohibited)
             app.run()
         } else {
+            _ = QuittableApplication.shared   // must come first: the app object is created once
             NotesApp.main()
         }
+    }
+}
+
+/// AppKit refuses to quit while a window shows a sheet (the setup assistant, a confirmation): Cmd-Q
+/// only beeps, a quit from a script or another app is answered "User cancelled", and the app
+/// delegate is never asked. So a quit first asks the open sheets to close (`closedOnQuit`; closing
+/// one in AppKit alone does not last, SwiftUI shows it again while its state says so) and goes ahead
+/// once they are gone, as usual from there on, including `AppDelegate`, which finishes a recording
+/// first. Downloads that are cut off resume on the next launch.
+final class QuittableApplication: NSApplication {
+    static let closeSheets = Notification.Name("QuittableApplication.closeSheets")
+
+    override func terminate(_ sender: Any?) {
+        quit(sender, triesLeft: 20)
+    }
+
+    private func quit(_ sender: Any?, triesLeft: Int) {
+        guard windows.contains(where: { $0.attachedSheet != nil }), triesLeft > 0 else { return super.terminate(sender) }
+        NotificationCenter.default.post(name: Self.closeSheets, object: nil)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { self.quit(sender, triesLeft: triesLeft - 1) }
+    }
+}
+
+extension View {
+    /// Closes this view's sheet or dialog when the app quits, by clearing the state that shows it.
+    /// Needed for every sheet and confirmation dialog: AppKit does not quit while one is open.
+    func closedOnQuit(_ close: @escaping () -> Void) -> some View {
+        onReceive(NotificationCenter.default.publisher(for: QuittableApplication.closeSheets)) { _ in close() }
     }
 }
 

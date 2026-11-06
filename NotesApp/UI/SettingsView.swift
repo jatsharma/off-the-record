@@ -216,6 +216,7 @@ struct PromptSettings: View {
             }
         }
         .formStyle(.grouped)
+        .closedOnQuit { pendingTemplate = nil }
         .confirmationDialog("Replace the prompt with the \(pendingTemplate?.name ?? "") template?",
                             isPresented: Binding(get: { pendingTemplate != nil }, set: { if !$0 { pendingTemplate = nil } }),
                             titleVisibility: .visible) {
@@ -292,6 +293,7 @@ struct ModelsSettings: View {
         }
         .formStyle(.grouped)
         .task { await refresh() }
+        .closedOnQuit { pendingDelete = nil }
         .confirmationDialog("Delete \(pendingDelete?.name ?? "")? It is downloaded again on next use.",
                             isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
                             titleVisibility: .visible) {

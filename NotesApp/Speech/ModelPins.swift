@@ -37,7 +37,9 @@ enum ModelPins {
             if folders.count == 1 { folder = folders.first; break }
         }
         guard let folder else { throw WhisperError.modelsUnavailable("No Whisper model named \"\(name)\" in \(whisperRepo)") }
-        let root = try await hub.snapshot(from: repo, revision: whisperRevision, matching: ["\(folder)/*"])
+        let root = try await SlowDownload.run(watching: hub.localRepoLocation(repo), label: "Whisper \(name)") {
+            try await hub.snapshot(from: repo, revision: whisperRevision, matching: ["\(folder)/*"])
+        }
         return root.appendingPathComponent(folder)
     }
 }

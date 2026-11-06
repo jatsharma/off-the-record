@@ -68,7 +68,11 @@ enum HinglishWhisper {
             throw SpeechError.modelMissing(engine)
         }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        _ = try await hub.snapshot(from: .init(id: repo), revision: revision) { p in progress(p.fractionCompleted) }
+        // WhisperKit opens a new session for each file and resumes from its `.incomplete` files, so
+        // starting again after a slow spell is enough to get a new connection.
+        _ = try await SlowDownload.run(watching: folder, label: repo) {
+            try await hub.snapshot(from: .init(id: repo), revision: revision) { p in progress(p.fractionCompleted) }
+        }
         guard hasModelFiles(folder) else { throw SpeechError.modelMissing(engine) }
         FileManager.default.createFile(atPath: folder.appendingPathComponent(completeMarker).path, contents: Data())
     }
