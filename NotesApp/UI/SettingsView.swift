@@ -106,6 +106,7 @@ struct VocabularySettings: View {
     @AppStorage(Vocabulary.cleanupKey) private var cleanup = true
     @AppStorage(Vocabulary.screenKey) private var readScreen = true
     @AppStorage(Vocabulary.correctionsKey) private var corrections = ""
+    @AppStorage(Vocabulary.notesFixesKey) private var notesFixes = ""
 
     var body: some View {
         Form {
@@ -126,6 +127,15 @@ struct VocabularySettings: View {
                 Text("Learned corrections (\(Vocabulary.corrections.count))")
             } footer: {
                 Text("What the recognizer heard → what it should be, e.g. \"dixcheck → DexScreener\". Added automatically when you correct a transcript line and replace a misheard name or term; applied to every new transcript. Delete a line to forget it.")
+            }
+            Section {
+                TextEditor(text: $notesFixes)
+                    .font(.body.monospaced())
+                    .frame(minHeight: 70)
+            } header: {
+                Text("Fixes from your notes edits (\(Vocabulary.notesFixes.count))")
+            } footer: {
+                Text("Wrong word → right word, e.g. \"countries → gantries\". Added when you change a few words in a meeting's notes; the notes model then writes the right word whenever the transcript has the wrong one in that sense. Delete a line to forget it.")
             }
             Section("Transcript") {
                 Toggle("Clean up the transcript with the notes model", isOn: $cleanup)

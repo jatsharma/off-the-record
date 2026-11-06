@@ -275,7 +275,7 @@ final class MeetingStore: ObservableObject {
             }
             let final = text.replacingOccurrences(of: " [?]", with: "").replacingOccurrences(of: "[?]", with: "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            update(meetingId) { $0.summary = final; $0.status = .done }
+            update(meetingId) { $0.summary = final; $0.status = .done; $0.notesEdited = false }
             liveSummary[meetingId] = nil
             if Self.isAutoTitle(meeting.title) {
                 progress[meetingId] = "Naming the meeting"
@@ -442,8 +442,61 @@ final class MeetingStore: ObservableObject {
 
     // MARK: Notes editing and action items
 
-    func updateSummary(_ meeting: Meeting, to text: String) {
-        update(meeting.id) { $0.summary = text }
+    /// Saves the whole note edited as Markdown. Lines changed one for one teach fixes as line edits do.
+    @discardableResult
+    func updateSummary(_ meeting: Meeting, to text: String) -> Vocabulary.NotesLesson {
+        let old = (fetch(meeting.id)?.summary ?? "").components(separatedBy: "\n")
+        let new = text.components(separatedBy: "\n")
+        var lesson = Vocabulary.NotesLesson()
+        if old.count == new.count {
+            for (a, b) in zip(old, new) where a != b {
+                let learned = Vocabulary.learnFromNotesEdit(old: NotesLine(a).content, new: NotesLine(b).content)
+                lesson.fixes += learned.fixes; lesson.terms += learned.terms
+            }
+        }
+        update(meeting.id) { $0.summary = text; $0.notesEdited = true }
+        return lesson
+    }
+
+    /// Replaces one line of the notes (inline editing). An empty line is removed. Returns what the
+    /// edit taught for later meetings.
+    @discardableResult
+    func editNotesLine(meetingId: String, lineIndex: Int, to newLine: String) -> Vocabulary.NotesLesson {
+        guard let summary = fetch(meetingId)?.summary else { return .init() }
+        var lines = summary.components(separatedBy: "\n")
+        guard lines.indices.contains(lineIndex), lines[lineIndex] != newLine else { return .init() }
+        let lesson = Vocabulary.learnFromNotesEdit(old: NotesLine(lines[lineIndex]).content, new: NotesLine(newLine).content)
+        if NotesLine(newLine).content.trimmingCharacters(in: .whitespaces).isEmpty { lines.remove(at: lineIndex) }
+        else { lines[lineIndex] = newLine }
+        update(meetingId) { $0.summary = lines.joined(separator: "\n"); $0.notesEdited = true }
+        return lesson
+    }
+
+    /// Adds a line after `lineIndex` (Return at the end of a bullet starts the next one).
+    func insertNotesLine(meetingId: String, after lineIndex: Int, _ line: String) {
+        guard let summary = fetch(meetingId)?.summary else { return }
+        var lines = summary.components(separatedBy: "\n")
+        lines.insert(line, at: min(lines.count, lineIndex + 1))
+        update(meetingId) { $0.summary = lines.joined(separator: "\n"); $0.notesEdited = true }
+    }
+
+    /// Whole-word, case-insensitive occurrences of `word` in the notes.
+    func occurrences(of word: String, inNotesOf meetingId: String) -> Int {
+        guard let summary = fetch(meetingId)?.summary, let regex = Self.wordRegex(word) else { return 0 }
+        return regex.numberOfMatches(in: summary, range: NSRange(summary.startIndex..., in: summary))
+    }
+
+    /// Applies a learned fix to the rest of this meeting's notes.
+    func replaceInNotes(meetingId: String, _ word: String, with replacement: String) {
+        guard let summary = fetch(meetingId)?.summary, let regex = Self.wordRegex(word) else { return }
+        let fixed = regex.stringByReplacingMatches(in: summary, range: NSRange(summary.startIndex..., in: summary),
+                                                   withTemplate: NSRegularExpression.escapedTemplate(for: replacement))
+        update(meetingId) { $0.summary = fixed; $0.notesEdited = true }
+    }
+
+    private static func wordRegex(_ word: String) -> NSRegularExpression? {
+        let body = word.split(separator: " ").map { NSRegularExpression.escapedPattern(for: String($0)) }.joined(separator: "\\s+")
+        return try? NSRegularExpression(pattern: "(?<![\\p{L}\\p{N}])" + body + "(?![\\p{L}\\p{N}])", options: [.caseInsensitive])
     }
 
     /// Flips the checkbox on one `- [ ]` / `- [x]` line of the notes.
@@ -451,10 +504,8 @@ final class MeetingStore: ObservableObject {
         guard let meeting = fetch(meetingId), let summary = meeting.summary else { return }
         var lines = summary.components(separatedBy: "\n")
         guard lines.indices.contains(lineIndex) else { return }
-        let line = lines[lineIndex]
-        if line.hasPrefix("- [ ] ") { lines[lineIndex] = "- [x] " + line.dropFirst(6) }
-        else if line.hasPrefix("- [x] ") || line.hasPrefix("- [X] ") { lines[lineIndex] = "- [ ] " + line.dropFirst(6) }
-        else { return }
+        guard let flipped = NotesLine(lines[lineIndex]).toggled else { return }
+        lines[lineIndex] = flipped
         update(meetingId) { $0.summary = lines.joined(separator: "\n") }
     }
 
@@ -473,10 +524,10 @@ final class MeetingStore: ObservableObject {
         var out: [ActionItem] = []
         for m in meetings {
             for (i, line) in (m.summary ?? "").components(separatedBy: "\n").enumerated() {
-                let open = line.hasPrefix("- [ ] "), done = line.hasPrefix("- [x] ") || line.hasPrefix("- [X] ")
-                guard open || done else { continue }
+                let parsed = NotesLine(line)
+                guard case .task(let done) = parsed.kind else { continue }
                 out.append(ActionItem(id: "\(m.id)#\(i)", meetingId: m.id, meetingTitle: m.title, meetingDate: m.createdAt,
-                                      lineIndex: i, text: String(line.dropFirst(6)), done: done))
+                                      lineIndex: i, text: parsed.content, done: done))
             }
         }
         return out

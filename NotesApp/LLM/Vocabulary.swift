@@ -11,6 +11,7 @@ enum Vocabulary {
     static let cleanupKey = "vocab.cleanup"        // run the LLM clean-up pass (default on)
     static let screenKey = "vocab.readScreen"      // read on-screen text while recording (default on)
     static let correctionsKey = "vocab.corrections" // "heard → wanted" lines learned from line edits
+    static let notesFixesKey = "vocab.notesFixes"   // "wrong → right" lines learned from notes edits
 
     static var cleanupEnabled: Bool { flag(cleanupKey, default: true) }
     static var readScreenEnabled: Bool { flag(screenKey, default: true) }
@@ -59,8 +60,10 @@ enum Vocabulary {
 
     /// Recognizer mishearings and what they should be ("dixcheck → DexScreener"), one per line.
     /// Learned when a transcript line is corrected; editable in Settings ▸ Vocabulary.
-    static var corrections: [(heard: String, wanted: String)] {
-        (UserDefaults.standard.string(forKey: correctionsKey) ?? "")
+    static var corrections: [(heard: String, wanted: String)] { pairs(forKey: correctionsKey) }
+
+    private static func pairs(forKey key: String) -> [(heard: String, wanted: String)] {
+        (UserDefaults.standard.string(forKey: key) ?? "")
             .components(separatedBy: .newlines)
             .compactMap { line in
                 let arrow: String = line.contains("→") ? "→" : "->"
@@ -130,6 +133,76 @@ enum Vocabulary {
         }
         flush()
         return gaps
+    }
+
+    // MARK: Learning from notes edits
+
+    /// Word fixes made in the notes ("countries → gantries", "thirteen students → thirteen screens"),
+    /// editable in Settings ▸ Vocabulary. The notes model gets them as hints for every later meeting;
+    /// it applies one only where the transcript uses the word in that sense.
+    static var notesFixes: [(heard: String, wanted: String)] { pairs(forKey: notesFixesKey) }
+
+    /// What one notes edit taught, so the page can say so and offer Undo.
+    struct NotesLesson: Equatable {
+        var fixes: [Fix] = []
+        var terms: [String] = []
+        var isEmpty: Bool { fixes.isEmpty && terms.isEmpty }
+        struct Fix: Equatable, Hashable { var heard: String; var wanted: String }
+    }
+
+    /// Learns from one edited line of notes. Only small swaps count (up to three words replaced by
+    /// up to three): a rewritten sentence is a content edit, not a mishearing. A fix whose new words
+    /// sound like the old ones ("countries" → "gantries") also joins the glossary, so the transcript
+    /// clean-up can restore it in later recordings; new names and terms join it as well.
+    @discardableResult
+    static func learnFromNotesEdit(old: String, new: String) -> NotesLesson {
+        var lesson = NotesLesson()
+        let a = words(old), b = words(new)
+        for (heard, wanted) in wordDiff(a, b) {
+            guard (1...3).contains(heard.count), (1...3).contains(wanted.count) else { continue }
+            let h = heard.joined(separator: " "), w = wanted.joined(separator: " ")
+            guard h.lowercased() != w.lowercased() else {
+                // Only the spelling's case changed ("postgres" → "Postgres"): a term, not a fix.
+                lesson.terms += wanted.filter { looksLikeTerm($0, strict: false) }
+                continue
+            }
+            // Ignore swaps of short everyday words ("a" → "the") and of numbers alone.
+            guard wanted.contains(where: { $0.count >= 4 && $0.contains(where: \.isLetter) }) else { continue }
+            lesson.fixes.append(.init(heard: h.lowercased(), wanted: w))
+            if Phonetic.supports(term: w, heardKeys: Phonetic.keys(of: h)) { lesson.terms.append(w) }
+        }
+        lesson.terms += newTerms(from: old, to: new)
+        let known = Set(manual.map { $0.lowercased() })
+        lesson.terms = unique(lesson.terms).filter { !known.contains($0.lowercased()) }
+        let knownFixes = Set(notesFixes.map { $0.heard.lowercased() })
+        lesson.fixes = lesson.fixes.filter { !knownFixes.contains($0.heard) }
+        guard !lesson.isEmpty else { return lesson }
+        learn(lesson.terms)
+        if !lesson.fixes.isEmpty {
+            let existing = UserDefaults.standard.string(forKey: notesFixesKey) ?? ""
+            let added = lesson.fixes.map { "\($0.heard) → \($0.wanted)" }
+            UserDefaults.standard.set((existing.isEmpty ? added : [existing] + added).joined(separator: "\n"), forKey: notesFixesKey)
+        }
+        return lesson
+    }
+
+    /// Takes back what one edit taught (the banner's Undo).
+    static func forget(_ lesson: NotesLesson) {
+        let terms = Set(lesson.terms.map { $0.lowercased() })
+        UserDefaults.standard.set(manual.filter { !terms.contains($0.lowercased()) }.joined(separator: "\n"), forKey: termsKey)
+        let fixes = Set(lesson.fixes.map(\.heard))
+        let kept = (UserDefaults.standard.string(forKey: notesFixesKey) ?? "").components(separatedBy: .newlines)
+            .filter { line in !fixes.contains(where: { line.lowercased().hasPrefix($0 + " →") || line.lowercased().hasPrefix($0 + " ->") }) }
+        UserDefaults.standard.set(kept.joined(separator: "\n"), forKey: notesFixesKey)
+    }
+
+    /// The fixes as a hint block for the notes prompt.
+    static func notesFixesBlock() -> String {
+        let fixes = notesFixes
+        guard !fixes.isEmpty else { return "" }
+        return "\nThe speech recognizer is known to mishear some words; earlier notes were corrected like this " +
+            "(write the right-hand word where the transcript has the left-hand one in that sense): " +
+            fixes.map { "\"\($0.heard)\" → \"\($0.wanted)\"" }.joined(separator: ", ") + "\n"
     }
 
     // MARK: Learning from edits

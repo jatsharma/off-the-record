@@ -12,15 +12,16 @@ struct MeetingDetailView: View {
     @State private var confirm: Confirm?
     @State private var showPlayer = CommandLine.arguments.contains("--show-player")
     @State private var followedSegment: String?
-    @State private var editingNotes = false
+    @State private var editingNotes = false        // whole note as Markdown
     @State private var notesDraft = ""
+    @State private var lesson: Vocabulary.NotesLesson?
     @State private var renaming: String?? = nil   // .some(speaker) while the popover is open
     @State private var newSpeakerName = ""
     @State private var editingSegment: Segment?
     @State private var segmentDraft = ""
 
     enum Tab: String, CaseIterable { case notes = "Notes", transcript = "Transcript" }
-    private enum Confirm: Identifiable { case audio, transcript, meeting; var id: Int { hashValue } }
+    private enum Confirm: Identifiable { case audio, transcript, meeting, regenerate; var id: Int { hashValue } }
 
     init(meetingId: String) {
         self.meetingId = meetingId
@@ -105,17 +106,36 @@ struct MeetingDetailView: View {
                         .padding(8)
                         .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 8))
                     HStack {
-                        Button("Save") { store.updateSummary(meeting, to: notesDraft); editingNotes = false }.buttonStyle(.borderedProminent)
-                        Button("Cancel") { editingNotes = false }
+                        Button("Save") { show(store.updateSummary(meeting, to: notesDraft)); editingNotes = false }
+                            .buttonStyle(.borderedProminent).keyboardShortcut("s", modifiers: .command)
+                        Button("Cancel") { editingNotes = false }.keyboardShortcut(.cancelAction)
                         Spacer()
                         Text("Markdown. Checkboxes: - [ ] task").font(.caption).foregroundStyle(.secondary)
                     }
                     .frame(maxWidth: 760)
                 } else if let text, !text.isEmpty {
-                    MarkdownText(text, onToggleCheckbox: { line in store.toggleActionItem(meetingId: meeting.id, lineIndex: line) })
+                    let writing = store.liveSummary[meeting.id] != nil
+                    if let lesson, !writing {
+                        LessonBanner(lesson: lesson,
+                                     remaining: { store.occurrences(of: $0.heard, inNotesOf: meeting.id) },
+                                     replaceAll: { store.replaceInNotes(meetingId: meeting.id, $0.heard, with: $0.wanted) },
+                                     undo: { Vocabulary.forget(lesson); self.lesson = nil },
+                                     dismiss: { self.lesson = nil })
+                            .frame(maxWidth: 760)
+                    }
+                    EditableNotes(text: text, editable: !writing,
+                                  onToggle: { store.toggleActionItem(meetingId: meeting.id, lineIndex: $0) },
+                                  onCommit: { show(store.editNotesLine(meetingId: meeting.id, lineIndex: $0, to: $1)) },
+                                  onInsert: { store.insertNotesLine(meetingId: meeting.id, after: $0, $1) },
+                                  onSeek: meeting.audioURL == nil ? nil : { listen(meeting, from: $0) })
                         .frame(maxWidth: 760, alignment: .leading)
-                    if store.liveSummary[meeting.id] != nil {
+                        .padding(.horizontal, -6)       // rows have a hover inset; keep text in line with the title
+                    if writing {
                         HStack(spacing: 6) { ProgressView().controlSize(.mini); Text("Writing…").font(.caption).foregroundStyle(.secondary) }
+                    } else {
+                        Text("Double-click a line to edit it. Words you fix are remembered for future meetings.")
+                            .font(.caption).foregroundStyle(.tertiary)
+                            .padding(.top, 8)
                     }
                 } else if meeting.status == .failed {
                     ContentUnavailableView("No notes yet", systemImage: "exclamationmark.triangle",
@@ -202,6 +222,12 @@ struct MeetingDetailView: View {
         }
     }
 
+    /// Shows what an edit taught, if anything.
+    private func show(_ learned: Vocabulary.NotesLesson) {
+        guard !learned.isEmpty else { return }
+        withAnimation { lesson = learned }
+    }
+
     /// Shows the player (loading the file if needed) and starts from a point in the meeting.
     private func listen(_ meeting: Meeting, from time: Double? = nil) {
         showPlayer = true
@@ -247,8 +273,8 @@ struct MeetingDetailView: View {
             if tab == .notes {
                 Button {
                     if editingNotes { editingNotes = false } else { notesDraft = meeting.summary ?? ""; editingNotes = true }
-                } label: { Label(editingNotes ? "Stop editing" : "Edit notes", systemImage: editingNotes ? "pencil.slash" : "pencil") }
-                .help(editingNotes ? "Discard edits" : "Edit the notes text")
+                } label: { Label(editingNotes ? "Stop editing" : "Edit as Markdown", systemImage: editingNotes ? "pencil.slash" : "chevron.left.forwardslash.chevron.right") }
+                .help(editingNotes ? "Discard edits" : "Edit the whole note as Markdown (double-click a line to edit just that line)")
                 .disabled((meeting.summary ?? "").isEmpty && !editingNotes)
             }
             Button {
@@ -258,7 +284,7 @@ struct MeetingDetailView: View {
             .disabled(meeting.audioPath == nil)
 
             Button {
-                store.queueSummarize(meetingId: meeting.id)
+                if meeting.notesEdited { confirm = .regenerate } else { store.queueSummarize(meetingId: meeting.id) }
             } label: { Label("Regenerate notes", systemImage: "arrow.clockwise") }
             .help("Write the notes again with the current prompt and model")
             .disabled(observer.segments.isEmpty || meeting.status == .summarizing || meeting.status == .transcribing)
@@ -290,6 +316,7 @@ struct MeetingDetailView: View {
         case .audio: return "Delete the audio recording? The transcript and notes stay, but the meeting cannot be transcribed again."
         case .transcript: return "Delete the transcript? The notes stay. Audio can be transcribed again."
         case .meeting: return "Delete this meeting, its audio, transcript and notes?"
+        case .regenerate: return "Write the notes again? Your edits to these notes will be replaced. Words you fixed are kept and used for the new notes."
         case nil: return ""
         }
     }
@@ -298,6 +325,7 @@ struct MeetingDetailView: View {
         case .audio: return "Delete audio"
         case .transcript: return "Delete transcript"
         case .meeting: return "Delete meeting"
+        case .regenerate: return "Regenerate notes"
         case nil: return ""
         }
     }
@@ -306,6 +334,7 @@ struct MeetingDetailView: View {
         case .audio: player.stop(); store.deleteAudio(meeting)
         case .transcript: store.deleteTranscript(meeting)
         case .meeting: player.stop(); store.delete(meeting)
+        case .regenerate: lesson = nil; store.queueSummarize(meetingId: meeting.id)
         case nil: break
         }
         confirm = nil
@@ -472,58 +501,5 @@ enum SpeakerPalette {
         for s in segments { if let n = s.speaker, !seen.contains(n) { seen.append(n) } }
         let i = seen.firstIndex(of: speaker) ?? 0
         return colors[i % colors.count]
-    }
-}
-
-/// Just enough Markdown for notes: headings, bullets, checkboxes, inline styles.
-struct MarkdownText: View {
-    let text: String
-    var onToggleCheckbox: ((Int) -> Void)? = nil
-    init(_ text: String, onToggleCheckbox: ((Int) -> Void)? = nil) { self.text = text; self.onToggleCheckbox = onToggleCheckbox }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            ForEach(Array(text.components(separatedBy: "\n").enumerated()), id: \.offset) { index, raw in
-                let line = raw.trimmingCharacters(in: .whitespaces)
-                if line.isEmpty {
-                    Spacer().frame(height: 2)
-                } else if line.hasPrefix("### ") {
-                    inline(String(line.dropFirst(4))).font(.headline).padding(.top, 4)
-                } else if line.hasPrefix("## ") {
-                    inline(String(line.dropFirst(3))).font(.title3.bold()).padding(.top, 10)
-                } else if line.hasPrefix("# ") {
-                    inline(String(line.dropFirst(2))).font(.title2.bold()).padding(.top, 10)
-                } else if line.hasPrefix("- [ ] ") || line.hasPrefix("- [x] ") || line.hasPrefix("- [X] ") {
-                    let done = !line.hasPrefix("- [ ] ")
-                    HStack(alignment: .top, spacing: 8) {
-                        Button { onToggleCheckbox?(index) } label: {
-                            Image(systemName: done ? "checkmark.square.fill" : "square")
-                                .foregroundStyle(done ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tint))
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(onToggleCheckbox == nil)
-                        .padding(.top, 2)
-                        inline(String(line.dropFirst(6))).strikethrough(done).foregroundStyle(done ? .secondary : .primary)
-                    }
-                } else if line.hasPrefix("- ") || line.hasPrefix("* ") || line.hasPrefix("• ") {
-                    HStack(alignment: .top, spacing: 8) {
-                        Text("•").foregroundStyle(.secondary)
-                        inline(String(line.dropFirst(2)))
-                    }
-                    .padding(.leading, 4)
-                } else {
-                    inline(line)
-                }
-            }
-        }
-        .textSelection(.enabled)
-        .lineSpacing(3)
-    }
-
-    private func inline(_ s: String) -> Text {
-        if let attributed = try? AttributedString(markdown: s, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)) {
-            return Text(attributed)
-        }
-        return Text(s)
     }
 }

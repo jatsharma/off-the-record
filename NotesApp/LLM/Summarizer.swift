@@ -107,6 +107,8 @@ enum Summarizer {
         } else if !block.isEmpty {
             template += "\n" + block
         }
+        let fixes = Vocabulary.notesFixesBlock()
+        if !fixes.isEmpty { template += "\n" + fixes }
         let days = relativeDays(from: meeting.createdAt)
         if template.contains("{{days}}") {
             template = template.replacingOccurrences(of: "{{days}}", with: days)

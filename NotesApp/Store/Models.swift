@@ -17,6 +17,8 @@ struct Meeting: Codable, Identifiable, Hashable, FetchableRecord, PersistableRec
     var summary: String?
     var status: MeetingStatus
     var errorMessage: String?
+    /// The user changed the notes by hand; Regenerate asks before replacing them.
+    var notesEdited: Bool = false
 
     var audioURL: URL? { audioPath.map { AppDatabase.audioDirectory.appendingPathComponent($0) } }
 }

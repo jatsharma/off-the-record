@@ -76,6 +76,11 @@ final class AppDatabase {
                 t.column("text", .text).notNull()
             }
         }
+        m.registerMigration("v4-notes-edited") { db in
+            try db.alter(table: "meeting") { t in
+                t.add(column: "notesEdited", .boolean).notNull().defaults(to: false)
+            }
+        }
         return m
     }
 }
