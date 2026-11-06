@@ -175,9 +175,23 @@ enum NotesPipeline {
         }.joined(separator: "\n")
     }
 
-    /// Puts checked items in place of the notes' action-item section (or adds the section).
+    /// Number of checklist lines in the notes' action-item section.
+    static func actionItemCount(in notes: String) -> Int {
+        let lines = notes.components(separatedBy: "\n")
+        guard let start = lines.firstIndex(where: { $0.lowercased().hasPrefix("## action item") }) else { return 0 }
+        let end = lines[(start + 1)...].firstIndex(where: { $0.hasPrefix("## ") }) ?? lines.count
+        // Any list line counts: models write "- [ ]", "*   [ ]", "- task" or "1. task".
+        return lines[(start + 1)..<end].filter {
+            $0.range(of: #"^\s*([-*•]|\d+[.)])\s+\S"#, options: .regularExpression) != nil
+        }.count
+    }
+
+    /// Puts checked items in place of the notes' action-item section (or adds the section). When the
+    /// check kept fewer tasks than the notes model wrote, the notes keep their own list: in testing the
+    /// separate step sometimes returned one task where the notes listed three correct ones, while a
+    /// merged task in the notes ("create project and send draft") came back as two, so more is better.
     static func replaceActionItems(in notes: String, with items: [ActionItem]) -> String {
-        guard !items.isEmpty else { return notes }
+        guard !items.isEmpty, items.count >= actionItemCount(in: notes) else { return notes }
         var lines = notes.components(separatedBy: "\n")
         let section = ["## Action items", render(items)]
         if let start = lines.firstIndex(where: { $0.lowercased().hasPrefix("## action item") }) {
